@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 
 type Row = Record<string, string | number | null | undefined>;
@@ -200,12 +200,61 @@ function RoutePreview({ auditors, rows, onDetails }: { auditors: string[]; rows:
   return <section className="panel route-detail-preview"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Auditores y puntos del día</h2><p>Consulta el detalle completo, el mapa segmentado y cada PDV en Google Maps.</p></div></div><div className="auditor-detail-list">{auditors.map((auditor) => { const points = rows.filter((row) => auditorOf(row) === auditor); const fixed = points.filter((row) => fixedOf(row).toUpperCase() === "SI").length; return <article key={auditor}><i>{auditor.slice(0, 1)}</i><div><strong>{auditor}</strong><small>{points.length} puntos · {fixed} PDV fijos</small></div><button onClick={() => onDetails(auditor)}>Ver detalles →</button></article>; })}</div><p className="my-maps-note"><b>My Maps:</b> el enlace no se actualiza automáticamente. Los puntos y rutas operativas se consultan directamente desde este ruteador.</p></section>;
 }
 
+function RouteMap({ rows }: { rows: Row[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const routeSignature = rows.map((row) => `${idOf(row)}:${coordinatesOf(row)?.lat ?? ""},${coordinatesOf(row)?.lng ?? ""}`).join("|");
+
+  useEffect(() => {
+    let disposed = false;
+    let routeMap: import("leaflet").Map | null = null;
+
+    void import("leaflet").then((L) => {
+      if (disposed || !containerRef.current) return;
+
+      routeMap = L.map(containerRef.current, {
+        scrollWheelZoom: false,
+        doubleClickZoom: false,
+        zoomControl: true,
+      });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxZoom: 19,
+      }).addTo(routeMap);
+
+      const positions: Array<[number, number]> = [];
+      rows.forEach((row, index) => {
+        const point = coordinatesOf(row);
+        if (!point || !routeMap) return;
+        const isFixed = fixedOf(row).toUpperCase() === "SI";
+        positions.push([point.lat, point.lng]);
+        const icon = L.divIcon({
+          className: "route-marker-shell",
+          html: `<span class="leaflet-number-marker ${isFixed ? "pdv-fixed" : "pdv-regular"}">${index + 1}</span>`,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        });
+        L.marker([point.lat, point.lng], { icon })
+          .addTo(routeMap)
+          .bindPopup(`<strong>${escapeHtml(nameOf(row))}</strong><br><span>${escapeHtml(idOf(row))}</span>`);
+      });
+
+      if (positions.length === 1) routeMap.setView(positions[0], 16);
+      else if (positions.length > 1) routeMap.fitBounds(L.latLngBounds(positions), { padding: [42, 42], maxZoom: 16 });
+      else routeMap.setView([18.4861, -69.9312], 10);
+
+      window.setTimeout(() => routeMap?.invalidateSize(), 0);
+    });
+
+    return () => {
+      disposed = true;
+      routeMap?.remove();
+    };
+  }, [routeSignature]);
+
+  return <div className="leaflet-route-map" ref={containerRef} aria-label="Mapa geográfico de los puntos de la ruta" />;
+}
+
 function RouteDetailPanel({ auditor, rows, onClose }: { auditor: string; rows: Row[]; onClose: () => void }) {
-  const orderedRows = [...rows].sort((a, b) => (fixedOf(b).toUpperCase() === "SI" ? 1 : 0) - (fixedOf(a).toUpperCase() === "SI" ? 1 : 0) || routeOrderOf(a) - routeOrderOf(b) || nameOf(a).localeCompare(nameOf(b)));
-  const mapped = orderedRows.map((row, index) => ({ row, index, point: coordinatesOf(row) })).filter((item): item is { row: Row; index: number; point: { lat: number; lng: number } } => Boolean(item.point));
-  const bounds = mapped.length ? { minLat: Math.min(...mapped.map((item) => item.point.lat)), maxLat: Math.max(...mapped.map((item) => item.point.lat)), minLng: Math.min(...mapped.map((item) => item.point.lng)), maxLng: Math.max(...mapped.map((item) => item.point.lng)) } : null;
-  const latitudePadding = bounds ? Math.max((bounds.maxLat - bounds.minLat) * .15, .008) : .01;
-  const longitudePadding = bounds ? Math.max((bounds.maxLng - bounds.minLng) * .15, .008) : .01;
-  const osmMap = bounds ? `https://www.openstreetmap.org/export/embed.html?bbox=${bounds.minLng - longitudePadding}%2C${bounds.minLat - latitudePadding}%2C${bounds.maxLng + longitudePadding}%2C${bounds.maxLat + latitudePadding}&layer=mapnik` : "";
-  return <div className="detail-overlay"><div className="detail-header"><div><p>RUTA DEL DÍA</p><h1>{auditor}</h1><span>{orderedRows.length} puntos programados · fijos primero</span></div><button onClick={onClose}>← Volver a rutas</button></div><div className="detail-actions">{routeChunks(orderedRows).map((chunk, index) => <a key={index} href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir {Math.ceil(orderedRows.length / 25) === 1 ? "ruta en Maps" : `tramo ${index + 1}`} ↗</a>)}<small>Google Maps permite hasta 25 paradas por tramo.</small></div><div className="detail-layout"><section className="detail-map"><iframe src={osmMap} title="Mapa de OpenStreetMap"/><div className="detail-map-title"><b>Mapa de puntos</b><span><i className="fixed-dot"></i> Fijo <i className="regular-dot"></i> No fijo</span></div>{bounds && mapped.map(({ row, index, point }) => { const left = 8 + ((point.lng - bounds.minLng) / Math.max(bounds.maxLng - bounds.minLng, .01)) * 84; const top = 87 - ((point.lat - bounds.minLat) / Math.max(bounds.maxLat - bounds.minLat, .01)) * 75; return <a className={fixedOf(row).toUpperCase() === "SI" ? "detail-marker fixed" : "detail-marker regular"} style={{ left: `${left}%`, top: `${top}%` }} href={pointMapsUrl(row)} target="_blank" rel="noreferrer" title={nameOf(row)} key={`${idOf(row)}-${index}`}>{index + 1}</a>; })}</section><section className="detail-points">{orderedRows.map((row, index) => <article key={`${idOf(row)}-${index}`}><span className={fixedOf(row).toUpperCase() === "SI" ? "point-number fixed" : "point-number regular"}>{index + 1}</span><div><strong>{nameOf(row)}</strong><small>{idOf(row)} · Ruta {value(row, ["RUTA PREVENTA"]) || "—"}</small><p><b>{channelOf(row) || "Sin canal"}</b><em className={fixedOf(row).toUpperCase() === "SI" ? "is-fixed" : "is-regular"}>{fixedOf(row).toUpperCase() === "SI" ? "PDV fijo" : "PDV no fijo"}</em></p></div><a href={pointMapsUrl(row)} target="_blank" rel="noreferrer">Ver en Google Maps ↗</a></article>)}</section></div></div>;
+  const orderedRows = useMemo(() => [...rows].sort((a, b) => (fixedOf(b).toUpperCase() === "SI" ? 1 : 0) - (fixedOf(a).toUpperCase() === "SI" ? 1 : 0) || routeOrderOf(a) - routeOrderOf(b) || nameOf(a).localeCompare(nameOf(b))), [rows]);
+  return <div className="detail-overlay"><div className="detail-header"><div><p>RUTA DEL DÍA</p><h1>{auditor}</h1><span>{orderedRows.length} puntos programados · fijos primero</span></div><button onClick={onClose}>← Volver a rutas</button></div><div className="detail-actions">{routeChunks(orderedRows).map((chunk, index) => <a key={index} href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir {Math.ceil(orderedRows.length / 25) === 1 ? "ruta en Maps" : `tramo ${index + 1}`} ↗</a>)}<small>Google Maps permite hasta 25 paradas por tramo.</small></div><div className="detail-layout"><section className="detail-map"><RouteMap rows={orderedRows}/><div className="detail-map-title"><b>Mapa de puntos</b><span><i className="fixed-dot"></i> Fijo <i className="regular-dot"></i> No fijo</span></div></section><section className="detail-points">{orderedRows.map((row, index) => <article key={`${idOf(row)}-${index}`}><span className={fixedOf(row).toUpperCase() === "SI" ? "point-number pdv-fixed" : "point-number pdv-regular"}>{index + 1}</span><div className="point-copy"><strong>{nameOf(row)}</strong><small>{idOf(row)} · Ruta {value(row, ["RUTA PREVENTA"]) || "—"}</small><p><b>{channelOf(row) || "Sin canal"}</b><em className={fixedOf(row).toUpperCase() === "SI" ? "is-fixed" : "is-regular"}>{fixedOf(row).toUpperCase() === "SI" ? "PDV fijo" : "PDV no fijo"}</em></p><a className="point-map-link" href={pointMapsUrl(row)} target="_blank" rel="noreferrer">Ver en Google Maps ↗</a></div></article>)}</section></div></div>;
 }
