@@ -19,20 +19,35 @@ const demoRows: Row[] = [
   { "ID cliente/PDV": "160700", "NAME Cliente (PDV)": "Bar El Faro", DIRECCIÓN: "Boca Chica", "TIPO CLIENTE ICE (D&N)": "ON PREMISE", "CLIENTE FIJO 30%": "NO", SELECCION: "S", TIPO: "S", DIA: 5, "Tabla11.auditor": "JOSÉ", "MUESTRA CUMPL.": "Cargar", "export.Estado": "Aprobada", LATITUD: 18.45, LONGITUD: -69.61 },
 ];
 
+const normalize = (entry: unknown) => String(entry ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 const value = (row: Row, names: string[]) => {
-  const key = Object.keys(row).find((header) => names.some((name) => header.trim().toLowerCase() === name.toLowerCase()));
+  const key = Object.keys(row).find((header) => names.some((name) => normalize(header) === normalize(name)));
   return key ? String(row[key] ?? "").trim() : "";
 };
-const dayOf = (row: Row) => Number(value(row, ["DIA", "Dia_Asignado"])) || 0;
+const dayOf = (row: Row) => Number(value(row, ["DIA", "Dia_Asignado"]).match(/\d+/)?.[0]) || 0;
 const idOf = (row: Row) => value(row, ["ID cliente/PDV", "Codigo DN", "CODIGO D&N"]);
 const auditorOf = (row: Row) => value(row, ["Tabla11.auditor", "auditor"]);
-const selectedOf = (row: Row) => value(row, ["SELECCION"]);
+const selectedOf = (row: Row) => value(row, ["SELECCION"]).toUpperCase();
 const fixedOf = (row: Row) => value(row, ["CLIENTE FIJO 30%"]);
 const statusOf = (row: Row) => value(row, ["export.Estado"]);
 const nameOf = (row: Row) => value(row, ["NAME Cliente (PDV)", "Nombre"]);
 const channelOf = (row: Row) => value(row, ["TIPO CLIENTE ICE (D&N)", "SUB CANAL", "TIPO"]);
-const pointTypeOf = (row: Row) => value(row, ["TIPO"]);
-const shouldLoad = (row: Row) => value(row, ["MUESTRA CUMPL."]).toLowerCase() === "cargar";
+const pointTypeOf = (row: Row) => selectedOf(row);
+const shouldLoad = (row: Row) => normalize(value(row, ["MUESTRA CUMPL."])) === "CARGAR";
+const coordinatesOf = (row: Row) => {
+  const lat = Number(value(row, ["LATITUD", "LATITUDE"]));
+  const lng = Number(value(row, ["LONGITUD", "LONGITUDE"]));
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0 ? { lat, lng } : null;
+};
+const mapsRouteUrl = (points: Row[]) => {
+  const coordinates = points.map(coordinatesOf).filter((point): point is { lat: number; lng: number } => Boolean(point)).slice(0, 25);
+  if (!coordinates.length) return "https://www.google.com/maps";
+  if (coordinates.length === 1) return `https://www.google.com/maps/search/?api=1&query=${coordinates[0].lat},${coordinates[0].lng}`;
+  const point = (item: { lat: number; lng: number }) => `${item.lat},${item.lng}`;
+  const params = new URLSearchParams({ api: "1", origin: point(coordinates[0]), destination: point(coordinates[coordinates.length - 1]), travelmode: "driving" });
+  if (coordinates.length > 2) params.set("waypoints", coordinates.slice(1, -1).map(point).join("|"));
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+};
 const csvEscape = (entry: unknown) => `"${String(entry ?? "").replaceAll('"', '""')}"`;
 const toCsv = (rows: Row[]) => {
   const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -55,6 +70,8 @@ export default function Home() {
   const [exports, setExports] = useState<ExportFile[]>([]);
   const [notice, setNotice] = useState("");
   const [mapLink, setMapLink] = useState("");
+  const [routeRows, setRouteRows] = useState<Row[]>([]);
+  const [mapAuditor, setMapAuditor] = useState("");
 
   const scheduled = useMemo(() => rows.filter((row) => dayOf(row) === day), [day, rows]);
   const extras = useMemo(() => rows.filter((row) => extraIds.includes(idOf(row))), [extraIds, rows]);
@@ -73,6 +90,13 @@ export default function Home() {
     const points = scheduled.filter((row) => selectedOf(row) === selection);
     return { selection, total: points.length, done: points.filter((row) => Boolean(statusOf(row))).length };
   }), [scheduled]);
+  const routeAuditors = useMemo(() => Array.from(new Set(routeRows.map(auditorOf).filter(Boolean))), [routeRows]);
+  const mapPoints = useMemo(() => routeRows.filter((row) => auditorOf(row) === mapAuditor).filter(coordinatesOf), [routeRows, mapAuditor]);
+  const mapBounds = useMemo(() => {
+    const points = mapPoints.map(coordinatesOf).filter((point): point is { lat: number; lng: number } => Boolean(point));
+    if (!points.length) return null;
+    return { minLat: Math.min(...points.map((point) => point.lat)), maxLat: Math.max(...points.map((point) => point.lat)), minLng: Math.min(...points.map((point) => point.lng)), maxLng: Math.max(...points.map((point) => point.lng)) };
+  }, [mapPoints]);
 
   const loadWorkbook = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -83,7 +107,7 @@ export default function Home() {
       if (!universe) throw new Error("No se encontró la hoja UNIVERSO.");
       const loaded = XLSX.utils.sheet_to_json<Row>(universe, { defval: "" });
       if (!loaded.length) throw new Error("UNIVERSO no tiene puntos para cargar.");
-      setRows(loaded); setSourceName(file.name); setExports([]); setExtraIds([]);
+      setRows(loaded); setSourceName(file.name); setExports([]); setExtraIds([]); setRouteRows([]); setMapAuditor("");
       const firstDay = dayOf(loaded[0]); if (firstDay) setDay(firstDay);
       setNotice(`${loaded.length.toLocaleString("es-DO")} PDV cargados correctamente.`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "No fue posible leer el Excel."); }
@@ -103,7 +127,8 @@ export default function Home() {
       ];
       segments.filter(([, points]) => points.length).forEach(([segment, points]) => files.push({ name: `${auditor}_${segment}.csv`, rows: points }));
     }
-    setExports(files); setTab("rutas"); setNotice(`${files.length} archivos CSV listos para el día ${day}. ${extras.length ? `${extras.length} excepción(es) incluida(s).` : ""}`);
+    setExports(files); setRouteRows(all); setMapAuditor(auditorOf(all[0] ?? {})); setTab("rutas");
+    setNotice(files.length ? `${files.length} archivos CSV listos para el día ${day}. ${extras.length ? `${extras.length} excepción(es) incluida(s).` : ""}` : `No se encontraron PDV pendientes para el día ${day}. Revisa MUESTRA CUMPL., export.Estado, DIA y Tabla11.auditor.`);
   };
 
   const toggleExtra = (id: string) => setExtraIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -111,7 +136,7 @@ export default function Home() {
 
   return <main>
     <aside className="sidebar">
-      <div className="brand"><span className="brand-mark">↗</span><span>Ruta<span>Viva</span></span></div>
+      <div className="brand"><img src="/dn-logo.jpg" alt="Dichter & Neira"/><span>Ruteador<small>planeación</small></span></div>
       <p className="workspace-label">OPERACIÓN DE CAMPO</p>
       <nav>
         <button className={tab === "inicio" ? "nav active" : "nav"} onClick={() => setTab("inicio")}><i>⌂</i> Resumen</button>
@@ -131,6 +156,7 @@ export default function Home() {
           <section className="two-col"><article className="panel progress-panel"><div className="panel-head"><div><p className="eyebrow">AVANCE GENERAL</p><h2>Cumplimiento de hoy</h2></div><button className="mini-link" onClick={() => setTab("dashboard")}>Ver detalle →</button></div><div className="completion"><div className="donut" style={{ "--progress": `${completion * 3.6}deg` } as React.CSSProperties}><div><b>{completion}%</b><small>completado</small></div></div><div className="progress-list">{auditorProgress.slice(0, 3).map((item) => <div className="progress-row" key={item.auditor}><span className="person-dot">{item.auditor.slice(0, 1)}</span><div><strong>{item.auditor}</strong><small>{item.done} visitados · {item.pending} pendientes</small></div><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b></div>)}</div></div></article><article className="panel map-preview"><div className="panel-head"><div><p className="eyebrow">MAPA DEL DÍA</p><h2>Rutas segmentadas</h2></div><button className="mini-link" onClick={() => setTab("rutas")}>Abrir rutas →</button></div><div className="map-grid"><span className="street s1"></span><span className="street s2"></span><span className="street s3"></span><span className="map-pin p1">●</span><span className="map-pin p2">●</span><span className="map-pin p3">●</span><span className="map-pin p4">●</span><div className="map-legend"><b><i></i> Selección T</b><b><i></i> Selección S</b></div></div></article></section>
         </>}
         {tab === "rutas" && <section className="routes-view"><div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS</p><h1>Prepara la operación de campo</h1><p>El motor replica la estructura de la macro: auditor, tipo, ON PREMISE y PDV fijo.</p></div><div className="date-chip">Día de campo <strong>{day}</strong></div></div><div className="route-controls panel"><div className="control"><label>País</label><select value={country} onChange={(event) => setCountry(event.target.value)}><option>República Dominicana</option><option disabled>Colombia · próximamente</option><option disabled>Guatemala · próximamente</option></select></div><div className="control small"><label>Día de campo</label><input type="number" min="1" max="31" value={day} onChange={(event) => setDay(Number(event.target.value) || 1)}/></div><div className="control source"><label>Base activa</label><strong>▣ {sourceName}</strong><small>{rows.length.toLocaleString("es-DO")} PDV disponibles</small></div><button className="button primary generate" onClick={createRoutes}>Cargar rutas <span>→</span></button></div><div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Un archivo por auditor y segmento, listo para importar.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>Rutas del día {day} · {country}</small></div><button className="button secondary" onClick={() => exports.forEach(downloadCsv)}>Descargar todos</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Define el día y presiona <b>“Cargar rutas”</b> para preparar los CSV.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div></section>}
+        {tab === "rutas" && routeAuditors.length > 0 && <section className="panel route-map-panel"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Puntos a visitar por auditor</h2><p>Los botones abren Google Maps con la ruta de conducción. Google admite hasta 25 puntos por apertura.</p></div></div><div className="auditor-route-list">{routeAuditors.map((auditor) => { const points = routeRows.filter((row) => auditorOf(row) === auditor); return <div className={mapAuditor === auditor ? "auditor-route active" : "auditor-route"} key={auditor}><button onClick={() => setMapAuditor(auditor)}><i>{auditor.slice(0, 1)}</i><span><strong>{auditor}</strong><small>{points.length} PDV pendientes</small></span><b>Ver puntos</b></button><a href={mapsRouteUrl(points)} target="_blank" rel="noreferrer">Abrir en Google Maps ↗</a></div>; })}</div><div className="map-canvas" aria-label={`Mapa de puntos de ${mapAuditor}`}><div className="map-title"><span>⌖</span><div><strong>{mapAuditor || "Selecciona un auditor"}</strong><small>{mapPoints.length} puntos con coordenadas</small></div></div><div className="map-road road-one"></div><div className="map-road road-two"></div><div className="map-road road-three"></div>{mapBounds && mapPoints.map((row, index) => { const point = coordinatesOf(row)!; const xRange = Math.max(mapBounds.maxLng - mapBounds.minLng, .01); const yRange = Math.max(mapBounds.maxLat - mapBounds.minLat, .01); const left = 8 + ((point.lng - mapBounds.minLng) / xRange) * 84; const top = 87 - ((point.lat - mapBounds.minLat) / yRange) * 75; return <span className="preview-pin" style={{ left: `${left}%`, top: `${top}%` }} title={nameOf(row)} key={`${idOf(row)}-${index}`}>{index + 1}</span>; })}<div className="map-scale">Puntos con LATITUD / LONGITUD</div></div></section>}
         {tab === "dashboard" && <section className="dashboard-view"><div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN</p><h1>Avance de visitas</h1><p>Lectura directa de <b>export.Estado</b>: un estado registrado equivale a PDV visitado.</p></div><div className="dashboard-filter"><label>Día</label><input type="number" value={day} min="1" max="31" onChange={(event) => setDay(Number(event.target.value) || 1)}/></div></div><section className="metrics"><Metric label="PDV programados" value={scheduled.length} change={`Día ${day}`} tone="blue" icon="⌖"/><Metric label="Visitados" value={visits.length} change="Con estado exportado" tone="mint" icon="✓"/><Metric label="Pendientes" value={scheduled.length - visits.length} change="Aún sin estado" tone="orange" icon="◷"/><Metric label="Cumplimiento" value={`${completion}%`} change="Meta diaria" tone="purple" icon="↗"/></section><section className="dashboard-grid"><article className="panel"><div className="panel-head"><div><p className="eyebrow">POR AUDITOR</p><h2>Seguimiento individual</h2></div></div><div className="data-table"><div className="table-row header"><span>Auditor</span><span>Programados</span><span>Visitados</span><span>Pendientes</span><span>Avance</span></div>{auditorProgress.map((item) => <div className="table-row" key={item.auditor}><span><i className="person-dot">{item.auditor[0]}</i>{item.auditor}</span><span>{item.total}</span><span className="done">{item.done}</span><span>{item.pending}</span><span><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b><i className="tiny-bar"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }}></i></i></span></div>)}</div></article><article className="panel selection-card"><p className="eyebrow">POR SELECCIÓN</p><h2>Prioridad de ejecución</h2>{bySelection.map((group) => { const percent = group.total ? Math.round(group.done / group.total * 100) : 0; return <div className="selection-row" key={group.selection}><div><span className={group.selection === "T" ? "selection-label t" : "selection-label s"}>{group.selection}</span><p><strong>Selección {group.selection}</strong><small>{group.done} de {group.total} visitados</small></p></div><b>{percent}%</b><div className="wide-bar"><i style={{ width: `${percent}%` }}></i></div></div>; })}<div className="status-note"><span>i</span> El avance cambia al cargar una base con nuevos valores en <b>export.Estado</b>.</div></article></section></section>}
         {tab === "base" && fieldMode && <section className="base-view"><div className="page-heading"><div><p className="eyebrow">ADMINISTRACIÓN</p><h1>Base de datos y configuración</h1><p>Reemplaza el archivo cuando cambie el universo de PDV. La estructura debe conservar la hoja <b>UNIVERSO</b>.</p></div></div><div className="base-grid"><label className="upload-card"><input type="file" accept=".xlsx,.xls" onChange={loadWorkbook}/><span className="upload-icon">↥</span><strong>Cargar nueva base</strong><p>Excel con UNIVERSO y DESCARGA</p><b>Seleccionar archivo</b></label><article className="panel base-status"><p className="eyebrow">BASE ACTIVA</p><h2>{sourceName}</h2><div className="base-stat"><strong>{rows.length.toLocaleString("es-DO")}</strong><span>PDV en Universo</span></div><div className="base-status-list"><p><span>✓</span> Hoja UNIVERSO detectada</p><p><span>✓</span> Campos de ruta reconocidos</p><p><span>✓</span> Listo para generar CSV</p></div></article></div><article className="panel field-reference"><p className="eyebrow">REGLAS DE RUTEO</p><h2>Campos usados para preparar las rutas</h2><div><span><b>MUESTRA CUMPL.</b><small>Solo “Cargar”</small></span><span><b>export.Estado</b><small>Vacío = pendiente</small></span><span><b>DIA</b><small>Hasta el día elegido</small></span><span><b>Tabla11.auditor</b><small>Archivo por auditor</small></span><span><b>TIPO</b><small>Segmentos T y S</small></span><span><b>CLIENTE FIJO 30%</b><small>Subsegmento fijo</small></span></div></article></section>}
       </div>
