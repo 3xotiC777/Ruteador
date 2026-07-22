@@ -114,7 +114,10 @@ export default function Home() {
   };
 
   const createRoutes = () => {
-    const base = rows.filter((row) => shouldLoad(row) && !statusOf(row) && dayOf(row) <= day);
+    const base = rows.filter((row) => {
+      const scheduledDay = dayOf(row);
+      return shouldLoad(row) && !statusOf(row) && scheduledDay >= 1 && scheduledDay <= day;
+    });
     const all = [...base, ...extras.filter((row) => !base.some((baseRow) => idOf(baseRow) === idOf(row)))];
     const files: ExportFile[] = [];
     for (const auditor of Array.from(new Set(all.map(auditorOf).filter(Boolean)))) {
