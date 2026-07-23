@@ -141,7 +141,11 @@ const value = (row: Row, names: string[]) => {
 const hasField = (row: Row, names: string[]) => Object.keys(row).some((header) => names.some((name) => normalize(header) === normalize(name)));
 const dayOf = (row: Row) => Number(value(row, ["DIA", "Dia_Asignado"]).match(/\d+/)?.[0]) || 0;
 const idOf = (row: Row) => value(row, ["ID cliente/PDV", "Codigo DN", "CODIGO D&N", "Código DN", "Codigo", "CÓDIGO", "RefID"]);
-const auditorOf = (row: Row) => value(row, ["Tabla11.auditor", "auditor", "MT", "Responsable"]);
+const auditorOf = (row: Row) => {
+  if (hasField(row, ["Tabla11.auditor"])) return value(row, ["Tabla11.auditor"]);
+  if (hasField(row, ["Responsable"])) return value(row, ["Responsable"]);
+  return value(row, ["MT", "auditor"]);
+};
 const selectedOf = (row: Row) => value(row, ["SELECCION"]).toUpperCase() || (hasField(row, ["DESCARGAR"]) ? "T" : "");
 const isTitular = (row: Row) => selectedOf(row) === "T";
 const isSupplemental = (row: Row) => /^S\d*$/.test(selectedOf(row));
