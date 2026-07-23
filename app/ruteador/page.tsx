@@ -5,6 +5,8 @@ import { ROUTER_STORAGE_PREFIX, RouterPlan, RouterPoint } from "../router-plan";
 import styles from "./ruteador.module.css";
 
 type Coordinates = { lat: number; lng: number };
+const MAPS_SEGMENT_SIZE = 5;
+const MAPS_SEGMENT_ADVANCE = MAPS_SEGMENT_SIZE - 1;
 
 const isTitular = (point: RouterPoint) => point.selection.toUpperCase() === "T";
 const isSupplement = (point: RouterPoint) => /^S\d*$/.test(point.selection.toUpperCase());
@@ -54,14 +56,14 @@ const optimizeRoute = (points: RouterPoint[], startKey: string) => {
 
 const mapChunks = (points: RouterPoint[]) => {
   const mapped = points.filter(hasCoordinates);
-  if (mapped.length <= 25) return mapped.length ? [mapped] : [];
+  if (mapped.length <= MAPS_SEGMENT_SIZE) return mapped.length ? [mapped] : [];
   const chunks: RouterPoint[][] = [];
   let offset = 0;
   while (offset < mapped.length) {
-    const chunk = mapped.slice(offset, offset + 25);
+    const chunk = mapped.slice(offset, offset + MAPS_SEGMENT_SIZE);
     chunks.push(chunk);
-    if (offset + 25 >= mapped.length) break;
-    offset += 24;
+    if (offset + MAPS_SEGMENT_SIZE >= mapped.length) break;
+    offset += MAPS_SEGMENT_ADVANCE;
   }
   return chunks;
 };
@@ -306,11 +308,22 @@ export default function AuditorRouterPage() {
           </div>
           {locationStatus && <p className={styles.locationStatus}>{locationStatus}</p>}
           <div className={styles.routeStats}><div><b>{titulars.length}</b><small>Titulares</small></div><div><b>{supplementalKeys.length}</b><small>Suplentes agregados</small></div><div><b>{totalDistance.toFixed(1)} km</b><small>Distancia aproximada</small></div></div>
+          <div className={styles.segmentSection}>
+            <div className={styles.segmentTitle}><div><b>Navegación por tramos</b><small>Máximo 5 puntos por tramo para que Google Maps no descarte ninguno.</small></div><span>{chunks.length} tramo(s)</span></div>
+            <div className={styles.segmentList}>{chunks.map((chunk, index) => {
+              const firstPoint = index * MAPS_SEGMENT_ADVANCE + 1;
+              const lastPoint = firstPoint + chunk.length - 1;
+              return <article key={index}>
+                <span>{index + 1}</span>
+                <div><b>Tramo {index + 1}</b><small>Puntos {firstPoint}–{lastPoint} · {chunk.length} ubicaciones{index ? ` · continúa desde el punto ${firstPoint}` : ""}</small></div>
+                <a href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir en Maps ↗</a>
+              </article>;
+            })}</div>
+          </div>
           <div className={styles.routeActions}>
-            {chunks.map((chunk, index) => <a href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer" key={index}>{chunks.length === 1 ? "Abrir ruta en Google Maps" : `Abrir tramo ${index + 1} en Maps`} ↗</a>)}
             <button onClick={() => setShowSupplements(true)}>+ Agregar suplente <b>{supplementalKeys.length || ""}</b></button>
           </div>
-          <p className={styles.routeNote}>El orden se calcula por proximidad geográfica. Google Maps aplica las calles y el tráfico al abrir la ruta.</p>
+          <p className={styles.routeNote}>Abre los tramos en orden. El último punto de cada tramo se repite como inicio del siguiente; Google Maps aplicará las calles y el tráfico.</p>
           <div className={styles.itinerary}>{ordered.map((point, index) => <article key={point.key}>
             <span className={isTitular(point) ? styles.itineraryT : styles.itineraryS}>{index + 1}</span>
             <div><b>{point.name}</b><small>{point.id} · {isTitular(point) ? "Titular" : `Suplente ${point.selection}`} · {point.fixed ? "Fijo" : "No fijo"}</small></div>
