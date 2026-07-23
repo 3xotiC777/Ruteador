@@ -197,12 +197,12 @@ function Metric({ label, value, change, tone, icon }: { label: string; value: st
 }
 
 function RoutePreview({ auditors, rows, onDetails }: { auditors: string[]; rows: Row[]; onDetails: (auditor: string) => void }) {
-  return <section className="panel route-detail-preview"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Auditores y puntos del día</h2><p>Consulta el detalle completo, el mapa segmentado y cada PDV en Google Maps.</p></div></div><div className="auditor-detail-list">{auditors.map((auditor) => { const points = rows.filter((row) => auditorOf(row) === auditor); const fixed = points.filter((row) => fixedOf(row).toUpperCase() === "SI").length; return <article key={auditor}><i>{auditor.slice(0, 1)}</i><div><strong>{auditor}</strong><small>{points.length} puntos · {fixed} PDV fijos</small></div><button onClick={() => onDetails(auditor)}>Ver detalles →</button></article>; })}</div><p className="my-maps-note"><b>My Maps:</b> el enlace no se actualiza automáticamente. Los puntos y rutas operativas se consultan directamente desde este ruteador.</p></section>;
+  return <section className="panel route-detail-preview"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Auditores y puntos del día</h2><p>Consulta el detalle completo, el mapa segmentado y cada PDV en Google Maps.</p></div></div><div className="auditor-detail-list">{auditors.map((auditor) => { const points = rows.filter((row) => auditorOf(row) === auditor); const titular = points.filter((row) => selectedOf(row) === "T").length; const suplente = points.filter((row) => selectedOf(row) === "S").length; return <article key={auditor}><i>{auditor.slice(0, 1)}</i><div><strong>{auditor}</strong><small>{points.length} puntos · {titular} titulares · {suplente} suplentes</small></div><button onClick={() => onDetails(auditor)}>Ver detalles →</button></article>; })}</div><p className="my-maps-note"><b>My Maps:</b> el enlace no se actualiza automáticamente. Los puntos y rutas operativas se consultan directamente desde este ruteador.</p></section>;
 }
 
 function RouteMap({ rows }: { rows: Row[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const routeSignature = rows.map((row) => `${idOf(row)}:${coordinatesOf(row)?.lat ?? ""},${coordinatesOf(row)?.lng ?? ""}`).join("|");
+  const routeSignature = rows.map((row) => `${idOf(row)}:${coordinatesOf(row)?.lat ?? ""},${coordinatesOf(row)?.lng ?? ""}:${fixedOf(row)}:${selectedOf(row)}`).join("|");
 
   useEffect(() => {
     let disposed = false;
@@ -226,16 +226,17 @@ function RouteMap({ rows }: { rows: Row[] }) {
         const point = coordinatesOf(row);
         if (!point || !routeMap) return;
         const isFixed = fixedOf(row).toUpperCase() === "SI";
+        const isTitular = selectedOf(row) === "T";
         positions.push([point.lat, point.lng]);
         const icon = L.divIcon({
           className: "route-marker-shell",
-          html: `<span class="leaflet-number-marker ${isFixed ? "pdv-fixed" : "pdv-regular"}">${index + 1}</span>`,
+          html: `<span class="leaflet-number-marker ${isFixed ? "pdv-fixed" : "pdv-regular"} ${isTitular ? "sample-titular" : "sample-suplente"}">${index + 1}</span>`,
           iconSize: [32, 32],
           iconAnchor: [16, 16],
         });
         L.marker([point.lat, point.lng], { icon })
           .addTo(routeMap)
-          .bindPopup(`<strong>${escapeHtml(nameOf(row))}</strong><br><span>${escapeHtml(idOf(row))}</span>`);
+          .bindPopup(`<strong>${escapeHtml(nameOf(row))}</strong><br><span>${escapeHtml(idOf(row))} · ${isTitular ? "Titular" : "Suplente"}</span>`);
       });
 
       if (positions.length === 1) routeMap.setView(positions[0], 16);
@@ -255,6 +256,12 @@ function RouteMap({ rows }: { rows: Row[] }) {
 }
 
 function RouteDetailPanel({ auditor, rows, onClose }: { auditor: string; rows: Row[]; onClose: () => void }) {
-  const orderedRows = useMemo(() => [...rows].sort((a, b) => (fixedOf(b).toUpperCase() === "SI" ? 1 : 0) - (fixedOf(a).toUpperCase() === "SI" ? 1 : 0) || routeOrderOf(a) - routeOrderOf(b) || nameOf(a).localeCompare(nameOf(b))), [rows]);
-  return <div className="detail-overlay"><div className="detail-header"><div><p>RUTA DEL DÍA</p><h1>{auditor}</h1><span>{orderedRows.length} puntos programados · fijos primero</span></div><button onClick={onClose}>← Volver a rutas</button></div><div className="detail-actions">{routeChunks(orderedRows).map((chunk, index) => <a key={index} href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir {Math.ceil(orderedRows.length / 25) === 1 ? "ruta en Maps" : `tramo ${index + 1}`} ↗</a>)}<small>Google Maps permite hasta 25 paradas por tramo.</small></div><div className="detail-layout"><section className="detail-map"><RouteMap rows={orderedRows}/><div className="detail-map-title"><b>Mapa de puntos</b><span><i className="fixed-dot"></i> Fijo <i className="regular-dot"></i> No fijo</span></div></section><section className="detail-points">{orderedRows.map((row, index) => <article key={`${idOf(row)}-${index}`}><span className={fixedOf(row).toUpperCase() === "SI" ? "point-number pdv-fixed" : "point-number pdv-regular"}>{index + 1}</span><div className="point-copy"><strong>{nameOf(row)}</strong><small>{idOf(row)} · Ruta {value(row, ["RUTA PREVENTA"]) || "—"}</small><p><b>{channelOf(row) || "Sin canal"}</b><em className={fixedOf(row).toUpperCase() === "SI" ? "is-fixed" : "is-regular"}>{fixedOf(row).toUpperCase() === "SI" ? "PDV fijo" : "PDV no fijo"}</em></p><a className="point-map-link" href={pointMapsUrl(row)} target="_blank" rel="noreferrer">Ver en Google Maps ↗</a></div></article>)}</section></div></div>;
+  const orderedRows = useMemo(() => [...rows].sort((a, b) => {
+    const selectionPriority = (row: Row) => selectedOf(row) === "T" ? 0 : selectedOf(row) === "S" ? 1 : 2;
+    return selectionPriority(a) - selectionPriority(b) || (fixedOf(b).toUpperCase() === "SI" ? 1 : 0) - (fixedOf(a).toUpperCase() === "SI" ? 1 : 0) || routeOrderOf(a) - routeOrderOf(b) || nameOf(a).localeCompare(nameOf(b));
+  }), [rows]);
+  const titularRows = orderedRows.filter((row) => selectedOf(row) === "T");
+  const suplenteRows = orderedRows.filter((row) => selectedOf(row) === "S");
+  const titularChunks = routeChunks(titularRows);
+  return <div className="detail-overlay"><div className="detail-header"><div><p>RUTA DEL DÍA</p><h1>{auditor}</h1><span>{titularRows.length} titulares · {suplenteRows.length} suplentes · titulares primero</span></div><button onClick={onClose}>← Volver a rutas</button></div><div className="detail-actions">{titularChunks.map((chunk, index) => <a key={index} href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir {titularChunks.length === 1 ? "ruta de titulares en Maps" : `titulares · tramo ${index + 1}`} ↗</a>)}{titularChunks.length ? <small>La ruta incluye solo titulares. Los suplentes quedan como respaldo.</small> : <small className="no-titular-route">No hay titulares disponibles para generar una ruta.</small>}</div><div className="detail-layout"><section className="detail-map"><RouteMap rows={orderedRows}/><div className="detail-map-title"><b>Mapa de puntos</b><span><i className="fixed-dot"></i> Fijo <i className="regular-dot"></i> No fijo</span><span className="selection-legend"><i className="titular-mark">T</i> Titular <i className="suplente-mark">S</i> Suplente</span></div></section><section className="detail-points">{orderedRows.map((row, index) => { const isTitular = selectedOf(row) === "T"; return <article key={`${idOf(row)}-${index}`}><span className={`${fixedOf(row).toUpperCase() === "SI" ? "point-number pdv-fixed" : "point-number pdv-regular"} ${isTitular ? "sample-titular" : "sample-suplente"}`}>{index + 1}</span><div className="point-copy"><strong>{nameOf(row)}</strong><small>{idOf(row)} · Ruta {value(row, ["RUTA PREVENTA"]) || "—"}</small><p><em className={isTitular ? "is-titular" : "is-suplente"}>{isTitular ? "Titular" : "Suplente"}</em><b>{channelOf(row) || "Sin canal"}</b><em className={fixedOf(row).toUpperCase() === "SI" ? "is-fixed" : "is-regular"}>{fixedOf(row).toUpperCase() === "SI" ? "PDV fijo" : "PDV no fijo"}</em></p><a className="point-map-link" href={pointMapsUrl(row)} target="_blank" rel="noreferrer">Ver en Google Maps ↗</a></div></article>; })}</section></div></div>;
 }
