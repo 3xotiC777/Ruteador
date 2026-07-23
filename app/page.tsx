@@ -2,6 +2,7 @@
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import { ROUTER_STORAGE_PREFIX, RouterPlan } from "./router-plan";
 
 type Row = Record<string, string | number | null | undefined>;
 type ExportFile = { name: string; rows: Row[] };
@@ -155,6 +156,7 @@ const statusOf = (row: Row) => value(row, ["export.Estado"]);
 const nameOf = (row: Row) => value(row, ["NAME Cliente (PDV)", "Nombre", "Negocio", "Nombre de Cliente", "PDV"]);
 const channelOf = (row: Row) => value(row, ["TIPO CLIENTE ICE (D&N)", "SUB CANAL", "TIPO", "Tipo Canal", "Tipo de Canal", "SubCanal", "Canal"]);
 const routeLabelOf = (row: Row) => value(row, ["RUTA PREVENTA", "Ruta DN", "Ruta Venta", "Ruta"]);
+const addressOf = (row: Row) => value(row, ["DIRECCIÓN", "Direccion 1", "Dirección 1", "DireccionPDV", "Direccion"]);
 const pointTypeOf = (row: Row) => selectedOf(row);
 const routeOrderOf = (row: Row) => Number(value(row, ["Orden_Ruta"]).match(/\d+/)?.[0]) || Number.MAX_SAFE_INTEGER;
 const shouldLoad = (row: Row) => normalize(value(row, ["MUESTRA CUMPL.", "DESCARGAR"])) === "CARGAR";
@@ -200,6 +202,37 @@ const toCsv = (rows: Row[]) => {
 const downloadCsv = (file: ExportFile) => {
   const href = URL.createObjectURL(new Blob(["\uFEFF" + toCsv(file.rows)], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a"); link.href = href; link.download = file.name; link.click(); URL.revokeObjectURL(href);
+};
+const openAuditorRouter = (auditor: string, country: string, rows: Row[]) => {
+  const storageKey = `${ROUTER_STORAGE_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const plan: RouterPlan = {
+    auditor,
+    country,
+    createdAt: Date.now(),
+    points: rows.map((row, index) => {
+      const coordinates = coordinatesOf(row);
+      return {
+        key: `${idOf(row) || "punto"}-${index}`,
+        id: idOf(row),
+        name: nameOf(row) || `Punto ${index + 1}`,
+        address: addressOf(row),
+        channel: channelOf(row),
+        route: routeLabelOf(row),
+        fixed: fixedOf(row).toUpperCase() === "SI",
+        selection: selectedOf(row),
+        lat: coordinates?.lat ?? null,
+        lng: coordinates?.lng ?? null,
+      };
+    }),
+  };
+  window.localStorage.setItem(storageKey, JSON.stringify(plan));
+  const routerWindow = window.open(`/ruteador?plan=${encodeURIComponent(storageKey)}`, "_blank");
+  if (!routerWindow) {
+    window.localStorage.removeItem(storageKey);
+    window.alert("El navegador bloqueó la nueva pestaña. Permite ventanas emergentes para abrir el ruteador.");
+    return;
+  }
+  routerWindow.opener = null;
 };
 
 export default function Home() {
@@ -386,7 +419,7 @@ export default function Home() {
         {tab === "dashboard" && <section className="dashboard-view"><div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN</p><h1>Avance de visitas</h1><p>Lectura directa de <b>export.Estado</b>: un estado registrado equivale a PDV visitado.</p></div><div className="dashboard-filter"><label>Día</label><input type="number" value={day} min="1" max="31" onChange={(event) => setDay(Number(event.target.value) || 1)}/></div></div><section className="metrics"><Metric label="PDV programados" value={scheduled.length} change={`Día ${day}`} tone="blue" icon="⌖"/><Metric label="Visitados" value={visits.length} change="Con estado exportado" tone="mint" icon="✓"/><Metric label="Pendientes" value={scheduled.length - visits.length} change="Aún sin estado" tone="orange" icon="◷"/><Metric label="Cumplimiento" value={`${completion}%`} change="Meta diaria" tone="purple" icon="↗"/></section><section className="dashboard-grid"><article className="panel"><div className="panel-head"><div><p className="eyebrow">POR AUDITOR</p><h2>Seguimiento individual</h2></div></div><div className="data-table"><div className="table-row header"><span>Auditor</span><span>Programados</span><span>Visitados</span><span>Pendientes</span><span>Avance</span></div>{auditorProgress.map((item) => <div className="table-row" key={item.auditor}><span><i className="person-dot">{item.auditor[0]}</i>{item.auditor}</span><span>{item.total}</span><span className="done">{item.done}</span><span>{item.pending}</span><span><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b><i className="tiny-bar"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }}></i></i></span></div>)}</div></article><article className="panel selection-card"><p className="eyebrow">POR SELECCIÓN</p><h2>Prioridad de ejecución</h2>{bySelection.map((group) => { const percent = group.total ? Math.round(group.done / group.total * 100) : 0; return <div className="selection-row" key={group.selection}><div><span className={group.selection === "T" ? "selection-label t" : "selection-label s"}>{group.selection}</span><p><strong>Selección {group.selection}</strong><small>{group.done} de {group.total} visitados</small></p></div><b>{percent}%</b><div className="wide-bar"><i style={{ width: `${percent}%` }}></i></div></div>; })}<div className="status-note"><span>i</span> El avance cambia al cargar una base con nuevos valores en <b>export.Estado</b>.</div></article></section></section>}
         {tab === "base" && fieldMode && <section className="base-view"><div className="page-heading"><div><p className="eyebrow">ADMINISTRACIÓN · {countryProfile.shortLabel}</p><h1>Base de datos y configuración</h1><p>Reemplaza el archivo cuando cambie el universo de PDV. El sistema detecta automáticamente la operación por sus columnas.</p></div><div className="country-base-chip">{countryProfile.label}</div></div><div className="base-grid"><label className="upload-card"><input type="file" accept=".xlsx,.xls" onChange={loadWorkbook}/><span className="upload-icon">↥</span><strong>Cargar nueva base</strong><p>{countryProfile.uploadHint}</p><b>Seleccionar archivo</b></label><article className="panel base-status"><p className="eyebrow">BASE ACTIVA</p><h2>{sourceName}</h2><div className="base-stat"><strong>{rows.length.toLocaleString("es-DO")}</strong><span>PDV en Universo</span></div><div className="base-status-list"><p><span>✓</span> Hoja UNIVERSO detectada</p><p><span>✓</span> Perfil {countryProfile.shortLabel} activo</p><p><span>✓</span> Listo para generar CSV</p>{country === "cr" && <p><span>{hasAuditorLimits ? "✓" : "i"}</span>{hasAuditorLimits ? "Cortes por responsable desde Cargue" : "Corte general con el día seleccionado"}</p>}</div></article></div><article className="panel field-reference"><p className="eyebrow">REGLAS DE RUTEO · {countryProfile.shortLabel}</p><h2>Cálculo replicado de la macro</h2><div>{countryProfile.rules.map((rule) => <span key={rule.field}><b>{rule.field}</b><small>{rule.detail}</small></span>)}</div></article></section>}
         {tab === "rutas" && routeAuditors.length > 0 && <RoutePreview auditors={routeAuditors} rows={routeRows} onDetails={setDetailAuditor}/>}
-        {detailAuditor && <RouteDetailPanel auditor={detailAuditor} rows={routeRows.filter((row) => auditorOf(row) === detailAuditor)} onClose={() => setDetailAuditor("")}/>} 
+        {detailAuditor && <RouteDetailPanel auditor={detailAuditor} country={countryProfile.label} rows={routeRows.filter((row) => auditorOf(row) === detailAuditor)} onClose={() => setDetailAuditor("")}/>}
         {tab === "rutas" && <button className="special-launch" onClick={() => setShowSpecial(true)}>+ Solicitudes especiales <span>{extraIds.length}</span></button>}
         {showSpecial && <div className="special-modal" role="dialog" aria-modal="true" aria-label="Solicitudes especiales"><div className="special-modal-card"><div className="special-modal-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>Agregar PDV a la ruta</h2><p>Busca por nombre, código, auditor, canal o <b>ruta</b>.</p></div><button onClick={() => setShowSpecial(false)} aria-label="Cerrar">×</button></div><div className="search modal-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar PDV, ruta, canal o auditor"/></div><div className="special-results">{filteredPoints.map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "special-result checked" : "special-result"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><div><strong>{nameOf(row)}</strong><small>{id} · Ruta {routeLabelOf(row) || "—"} · {channelOf(row) || "Sin canal"}</small></div><span className={fixedOf(row).toUpperCase() === "SI" ? "fixed-badge" : "normal-badge"}>{fixedOf(row).toUpperCase() === "SI" ? "Fijo" : "No fijo"}</span></button>})}{!filteredPoints.length && <p className="empty">No hay puntos que coincidan con la búsqueda.</p>}</div><div className="special-modal-footer"><span>{extraIds.length} PDV seleccionados</span><button className="button primary modal-done" onClick={() => setShowSpecial(false)}>Listo</button></div></div></div>}
       </div>
@@ -457,7 +490,7 @@ function RouteMap({ rows }: { rows: Row[] }) {
   return <div className="leaflet-route-map" ref={containerRef} aria-label="Mapa geográfico de los puntos de la ruta" />;
 }
 
-function RouteDetailPanel({ auditor, rows, onClose }: { auditor: string; rows: Row[]; onClose: () => void }) {
+function RouteDetailPanel({ auditor, country, rows, onClose }: { auditor: string; country: string; rows: Row[]; onClose: () => void }) {
   const orderedRows = useMemo(() => [...rows].sort((a, b) => {
     const selectionPriority = (row: Row) => isTitular(row) ? 0 : isSupplemental(row) ? 1 : 2;
     return selectionPriority(a) - selectionPriority(b) || (fixedOf(b).toUpperCase() === "SI" ? 1 : 0) - (fixedOf(a).toUpperCase() === "SI" ? 1 : 0) || routeOrderOf(a) - routeOrderOf(b) || nameOf(a).localeCompare(nameOf(b));
@@ -465,5 +498,5 @@ function RouteDetailPanel({ auditor, rows, onClose }: { auditor: string; rows: R
   const titularRows = orderedRows.filter(isTitular);
   const suplenteRows = orderedRows.filter(isSupplemental);
   const titularChunks = routeChunks(titularRows);
-  return <div className="detail-overlay"><div className="detail-header"><div><p>RUTA DEL DÍA</p><h1>{auditor}</h1><span>{titularRows.length} titulares · {suplenteRows.length} suplentes · titulares primero</span></div><button onClick={onClose}>← Volver a rutas</button></div><div className="detail-actions">{titularChunks.map((chunk, index) => <a key={index} href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir {titularChunks.length === 1 ? "ruta de titulares en Maps" : `titulares · tramo ${index + 1}`} ↗</a>)}{titularChunks.length ? <small>La ruta incluye solo titulares. Los suplentes quedan como respaldo.</small> : <small className="no-titular-route">No hay titulares disponibles para generar una ruta.</small>}</div><div className="detail-layout"><section className="detail-map"><RouteMap rows={orderedRows}/><div className="detail-map-title"><b>Mapa de puntos</b><span><i className="fixed-dot"></i> Fijo <i className="regular-dot"></i> No fijo</span><span className="selection-legend"><i className="titular-mark">T</i> Titular <i className="suplente-mark">S</i> Suplente</span></div></section><section className="detail-points">{orderedRows.map((row, index) => { const titular = isTitular(row); return <article key={`${idOf(row)}-${index}`}><span className={`${fixedOf(row).toUpperCase() === "SI" ? "point-number pdv-fixed" : "point-number pdv-regular"} ${titular ? "sample-titular" : "sample-suplente"}`}>{index + 1}</span><div className="point-copy"><strong>{nameOf(row)}</strong><small>{idOf(row)} · Ruta {routeLabelOf(row) || "—"}</small><p><em className={titular ? "is-titular" : "is-suplente"}>{titular ? "Titular" : `Suplente ${selectedOf(row)}`}</em><b>{channelOf(row) || "Sin canal"}</b><em className={fixedOf(row).toUpperCase() === "SI" ? "is-fixed" : "is-regular"}>{fixedOf(row).toUpperCase() === "SI" ? "PDV fijo" : "PDV no fijo"}</em></p><a className="point-map-link" href={pointMapsUrl(row)} target="_blank" rel="noreferrer">Ver en Google Maps ↗</a></div></article>; })}</section></div></div>;
+  return <div className="detail-overlay"><div className="detail-header"><div><p>RUTA DEL DÍA</p><h1>{auditor}</h1><span>{titularRows.length} titulares · {suplenteRows.length} suplentes · titulares primero</span></div><button onClick={onClose}>← Volver a rutas</button></div><div className="detail-actions"><button className="router-launch" onClick={() => openAuditorRouter(auditor, country, orderedRows)}>Ruteador · ordenar recorrido →</button>{titularChunks.map((chunk, index) => <a key={index} href={mapsRouteUrl(chunk)} target="_blank" rel="noreferrer">Abrir {titularChunks.length === 1 ? "titulares sin ordenar en Maps" : `titulares sin ordenar · tramo ${index + 1}`} ↗</a>)}{titularChunks.length ? <small>El ruteador calcula el orden desde el punto inicial que elijas y permite agregar suplentes.</small> : <small className="no-titular-route">No hay titulares disponibles para generar una ruta.</small>}</div><div className="detail-layout"><section className="detail-map"><RouteMap rows={orderedRows}/><div className="detail-map-title"><b>Mapa de puntos</b><span><i className="fixed-dot"></i> Fijo <i className="regular-dot"></i> No fijo</span><span className="selection-legend"><i className="titular-mark">T</i> Titular <i className="suplente-mark">S</i> Suplente</span></div></section><section className="detail-points">{orderedRows.map((row, index) => { const titular = isTitular(row); return <article key={`${idOf(row)}-${index}`}><span className={`${fixedOf(row).toUpperCase() === "SI" ? "point-number pdv-fixed" : "point-number pdv-regular"} ${titular ? "sample-titular" : "sample-suplente"}`}>{index + 1}</span><div className="point-copy"><strong>{nameOf(row)}</strong><small>{idOf(row)} · Ruta {routeLabelOf(row) || "—"}</small><p><em className={titular ? "is-titular" : "is-suplente"}>{titular ? "Titular" : `Suplente ${selectedOf(row)}`}</em><b>{channelOf(row) || "Sin canal"}</b><em className={fixedOf(row).toUpperCase() === "SI" ? "is-fixed" : "is-regular"}>{fixedOf(row).toUpperCase() === "SI" ? "PDV fijo" : "PDV no fijo"}</em></p><a className="point-map-link" href={pointMapsUrl(row)} target="_blank" rel="noreferrer">Ver en Google Maps ↗</a></div></article>; })}</section></div></div>;
 }
