@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { ROUTER_STORAGE_PREFIX, RouterPlan } from "./router-plan";
 
@@ -8,7 +8,9 @@ type Row = Record<string, string | number | null | undefined>;
 type ExportFile = { name: string; rows: Row[] };
 type CountryId = "rd" | "gt-embocen" | "gt-abvo" | "cr";
 type AuditorLimits = Record<string, number>;
-type CountryBase = { rows: Row[]; sourceName: string; auditorLimits: AuditorLimits; defaultDay: number };
+type UserRole = "Administrador" | "Campo";
+type SessionIdentity = { username: string; role: UserRole };
+type CountryBase = { rows: Row[]; sourceName: string; auditorLimits: AuditorLimits; defaultDay: number; updatedAt: number };
 type CountryProfile = {
   label: string;
   shortLabel: string;
@@ -236,16 +238,15 @@ const openAuditorRouter = (auditor: string, country: string, rows: Row[]) => {
 };
 
 export default function Home() {
-  const [rows, setRows] = useState<Row[]>(demoRows);
-  const [sourceName, setSourceName] = useState("Vista demostración · República Dominicana");
-  const [day, setDay] = useState(5);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [sourceName, setSourceName] = useState("Consultando base compartida…");
+  const [day, setDay] = useState(1);
   const [tab, setTab] = useState<"inicio" | "rutas" | "dashboard" | "base">("inicio");
-  const [role, setRole] = useState<"Administrador" | "Campo">("Administrador");
+  const [role, setRole] = useState<UserRole | null>(null);
+  const [username, setUsername] = useState("");
+  const [authLoading, setAuthLoading] = useState(true);
   const [country, setCountry] = useState<CountryId>("rd");
   const [auditorLimits, setAuditorLimits] = useState<AuditorLimits>({});
-  const [countryBases, setCountryBases] = useState<Partial<Record<CountryId, CountryBase>>>({
-    rd: { rows: demoRows, sourceName: "Vista demostración · República Dominicana", auditorLimits: {}, defaultDay: 5 },
-  });
   const [extraIds, setExtraIds] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [exports, setExports] = useState<ExportFile[]>([]);
@@ -255,6 +256,7 @@ export default function Home() {
   const [mapAuditor, setMapAuditor] = useState("");
   const [showSpecial, setShowSpecial] = useState(false);
   const [detailAuditor, setDetailAuditor] = useState("");
+  const baseVersions = useRef<Partial<Record<CountryId, number>>>({});
   const countryProfile = COUNTRY_PROFILES[country];
   const hasAuditorLimits = Object.keys(auditorLimits).length > 0;
 
@@ -283,10 +285,91 @@ export default function Home() {
     return { minLat: Math.min(...points.map((point) => point.lat)), maxLat: Math.max(...points.map((point) => point.lat)), minLng: Math.min(...points.map((point) => point.lng)), maxLng: Math.max(...points.map((point) => point.lng)) };
   }, [mapPoints]);
 
+  const clearRouteWork = useCallback(() => {
+    setExports([]);
+    setExtraIds([]);
+    setRouteRows([]);
+    setMapAuditor("");
+    setDetailAuditor("");
+    setSearch("");
+  }, []);
+
+  const activateSharedBase = useCallback(async (
+    nextCountry: CountryId,
+    options: { announce?: boolean; resetWork?: boolean; force?: boolean } = {},
+  ) => {
+    const profile = COUNTRY_PROFILES[nextCountry];
+    try {
+      const response = await fetch(`/api/bases/${nextCountry}`, { cache: "no-store", credentials: "same-origin" });
+      if (response.status === 401) {
+        setRole(null);
+        setUsername("");
+        setRows([]);
+        setSourceName("Sesión finalizada");
+        return;
+      }
+      if (response.status === 404) {
+        setCountry(nextCountry);
+        setRows([]);
+        setSourceName(`Sin base compartida · ${profile.label}`);
+        setAuditorLimits({});
+        setDay(1);
+        delete baseVersions.current[nextCountry];
+        if (options.resetWork) clearRouteWork();
+        if (options.announce) setNotice(`Todavía no hay una base activa para ${profile.label}. Administrador debe cargarla una sola vez.`);
+        return;
+      }
+      const body = await response.json() as CountryBase & { error?: string };
+      if (!response.ok) throw new Error(body.error || "No fue posible consultar la base compartida.");
+      if (!options.force && !options.resetWork && baseVersions.current[nextCountry] === body.updatedAt) return;
+
+      setCountry(nextCountry);
+      setRows(body.rows);
+      setSourceName(body.sourceName);
+      setAuditorLimits(body.auditorLimits ?? {});
+      setDay(body.defaultDay || 1);
+      baseVersions.current[nextCountry] = body.updatedAt;
+      if (options.resetWork) clearRouteWork();
+      if (options.announce) setNotice(`Base compartida de ${profile.label} activada.`);
+    } catch (error) {
+      if (options.announce) setNotice(error instanceof Error ? error.message : "No fue posible consultar la base compartida.");
+    }
+  }, [clearRouteWork]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
+        if (!response.ok) return;
+        const identity = await response.json() as SessionIdentity;
+        if (!active) return;
+        setRole(identity.role);
+        setUsername(identity.username);
+        await activateSharedBase("rd", { resetWork: true, force: true });
+      } finally {
+        if (active) setAuthLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [activateSharedBase]);
+
+  useEffect(() => {
+    if (!role) return;
+    const refresh = () => void activateSharedBase(country);
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [activateSharedBase, country, role]);
+
   const loadWorkbook = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
+      if (role !== "Administrador") throw new Error("Solo Administrador puede reemplazar las bases.");
       const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
       const universe = workbook.Sheets[workbook.SheetNames.find((name) => name.trim().toUpperCase() === "UNIVERSO") ?? ""];
       if (!universe) throw new Error("No se encontró la hoja UNIVERSO.");
@@ -312,26 +395,45 @@ export default function Home() {
 
       const validDays = loaded.map(dayOf).filter((loadedDay) => loadedDay >= 1);
       const firstDay = validDays.length ? Math.min(...validDays) : 1;
-      const loadedBase: CountryBase = { rows: loaded, sourceName: file.name, auditorLimits: loadedLimits, defaultDay: firstDay };
-      setCountryBases((current) => ({ ...current, [effectiveCountry]: loadedBase }));
-      setCountry(effectiveCountry); setRows(loaded); setSourceName(file.name); setAuditorLimits(loadedLimits);
-      setExports([]); setExtraIds([]); setRouteRows([]); setMapAuditor(""); setDetailAuditor(""); setDay(firstDay);
+      setNotice(`Guardando ${loaded.length.toLocaleString("es-DO")} PDV para todo el equipo…`);
+      const response = await fetch(`/api/bases/${effectiveCountry}`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: loaded, sourceName: file.name, auditorLimits: loadedLimits, defaultDay: firstDay }),
+      });
+      const saved = await response.json() as CountryBase & { error?: string };
+      if (!response.ok) throw new Error(saved.error || "No fue posible guardar la base compartida.");
+
+      setCountry(effectiveCountry); setRows(saved.rows); setSourceName(saved.sourceName); setAuditorLimits(saved.auditorLimits);
+      clearRouteWork(); setDay(saved.defaultDay); baseVersions.current[effectiveCountry] = saved.updatedAt;
       const detectedNote = effectiveCountry !== country ? ` Se detectó automáticamente ${effectiveProfile.label}.` : "";
       const costaRicaNote = effectiveCountry === "cr" && !cargueName ? " El archivo no incluye Cargue; se usará el día seleccionado como corte para todos los responsables." : "";
-      setNotice(`${loaded.length.toLocaleString("es-DO")} PDV cargados correctamente.${detectedNote}${costaRicaNote}`);
+      setNotice(`${loaded.length.toLocaleString("es-DO")} PDV publicados para todo el equipo.${detectedNote}${costaRicaNote}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "No fue posible leer el Excel."); }
     event.target.value = "";
   };
 
   const changeCountry = (nextCountry: CountryId) => {
-    const savedBase = countryBases[nextCountry];
     setCountry(nextCountry);
-    setRows(savedBase?.rows ?? []);
-    setSourceName(savedBase?.sourceName ?? `Sin base cargada · ${COUNTRY_PROFILES[nextCountry].label}`);
-    setAuditorLimits(savedBase?.auditorLimits ?? {});
-    setDay(savedBase?.defaultDay ?? 1);
-    setExports([]); setExtraIds([]); setRouteRows([]); setMapAuditor(""); setDetailAuditor(""); setSearch("");
-    setNotice(savedBase ? `Base de ${COUNTRY_PROFILES[nextCountry].label} activada.` : `Seleccionaste ${COUNTRY_PROFILES[nextCountry].label}. Carga su Excel desde Base de datos.`);
+    setRows([]);
+    setSourceName(`Consultando base compartida · ${COUNTRY_PROFILES[nextCountry].label}`);
+    clearRouteWork();
+    void activateSharedBase(nextCountry, { announce: true, resetWork: true, force: true });
+  };
+
+  const logout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    } finally {
+      setRole(null);
+      setUsername("");
+      setTab("inicio");
+      setRows([]);
+      setSourceName("Sesión finalizada");
+      baseVersions.current = {};
+      clearRouteWork();
+    }
   };
 
   const createRoutes = () => {
@@ -384,6 +486,14 @@ export default function Home() {
   const toggleExtra = (id: string) => setExtraIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   const fieldMode = role === "Administrador";
 
+  if (authLoading) return <LoginLoading/>;
+  if (!role) return <LoginScreen onAuthenticated={(identity) => {
+    setRole(identity.role);
+    setUsername(identity.username);
+    setAuthLoading(false);
+    void activateSharedBase("rd", { resetWork: true, force: true });
+  }}/>;
+
   return <main>
     <aside className="sidebar">
       <div className="brand"><img src="/dn-logo.jpg" alt="Dichter & Neira"/><span>Ruteador<small>planeación</small></span></div>
@@ -394,10 +504,10 @@ export default function Home() {
         <button className={tab === "dashboard" ? "nav active" : "nav"} onClick={() => setTab("dashboard")}><i>◔</i> Dashboard</button>
         {fieldMode && <button className={tab === "base" ? "nav active" : "nav"} onClick={() => setTab("base")}><i>▣</i> Base de datos</button>}
       </nav>
-      <div className="sidebar-footer"><div className="avatar">MV</div><div><strong>María Valdez</strong><small>{role}</small></div><button className="more">•••</button></div>
+      <div className="sidebar-footer"><div className="avatar">{username.slice(0, 2).toUpperCase()}</div><div><strong>{username}</strong><small>{role}</small></div></div>
     </aside>
     <section className="app-shell">
-      <header className="topbar"><div className="crumb"><span>Ruteador</span><b>/</b><strong>{tab === "inicio" ? "Resumen operativo" : tab[0].toUpperCase() + tab.slice(1)}</strong></div><div className="top-actions"><span className="sync"><b></b> Base al día</span><select aria-label="Modo de acceso" value={role} onChange={(event) => { setRole(event.target.value as "Administrador" | "Campo"); if (event.target.value === "Campo" && tab === "base") setTab("inicio"); }}><option>Administrador</option><option>Campo</option></select></div></header>
+      <header className="topbar"><div className="crumb"><span>Ruteador</span><b>/</b><strong>{tab === "inicio" ? "Resumen operativo" : tab[0].toUpperCase() + tab.slice(1)}</strong></div><div className="top-actions"><span className="sync"><b></b> Base compartida</span><div className="signed-user"><span>{username}</span><small>{role}</small></div><button className="logout-button" onClick={logout}>Salir</button></div></header>
       <div className="content">
         {notice && <div className="notice"><span>✓</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
         {tab === "inicio" && <>
@@ -424,6 +534,55 @@ export default function Home() {
         {showSpecial && <div className="special-modal" role="dialog" aria-modal="true" aria-label="Solicitudes especiales"><div className="special-modal-card"><div className="special-modal-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>Agregar PDV a la ruta</h2><p>Busca por nombre, código, auditor, canal o <b>ruta</b>.</p></div><button onClick={() => setShowSpecial(false)} aria-label="Cerrar">×</button></div><div className="search modal-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar PDV, ruta, canal o auditor"/></div><div className="special-results">{filteredPoints.map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "special-result checked" : "special-result"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><div><strong>{nameOf(row)}</strong><small>{id} · Ruta {routeLabelOf(row) || "—"} · {channelOf(row) || "Sin canal"}</small></div><span className={fixedOf(row).toUpperCase() === "SI" ? "fixed-badge" : "normal-badge"}>{fixedOf(row).toUpperCase() === "SI" ? "Fijo" : "No fijo"}</span></button>})}{!filteredPoints.length && <p className="empty">No hay puntos que coincidan con la búsqueda.</p>}</div><div className="special-modal-footer"><span>{extraIds.length} PDV seleccionados</span><button className="button primary modal-done" onClick={() => setShowSpecial(false)}>Listo</button></div></div></div>}
       </div>
     </section>
+  </main>;
+}
+
+function LoginLoading() {
+  return <main className="login-shell"><section className="login-card login-loading"><img src="/dn-logo.jpg" alt="Dichter & Neira"/><span className="login-spinner"></span><p>Preparando el ruteador…</p></section></main>;
+}
+
+function LoginScreen({ onAuthenticated }: { onAuthenticated: (identity: SessionIdentity) => void }) {
+  const [loginUsername, setLoginUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: loginUsername, password }),
+      });
+      const body = await response.json() as SessionIdentity & { error?: string };
+      if (!response.ok) throw new Error(body.error || "No fue posible iniciar sesión.");
+      onAuthenticated({ username: body.username, role: body.role });
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : "No fue posible iniciar sesión.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return <main className="login-shell">
+    <section className="login-card">
+      <div className="login-brand"><img src="/dn-logo.jpg" alt="Dichter & Neira"/><div><strong>Ruteador</strong><small>planeación</small></div></div>
+      <p className="eyebrow">ACCESO AL EQUIPO DE CAMPO</p>
+      <h1>Bienvenido</h1>
+      <p className="login-copy">Ingresa con el usuario asignado para consultar las rutas y bases compartidas.</p>
+      <form onSubmit={submit}>
+        <label>Nombre de usuario<input autoComplete="username" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="Tu usuario" required/></label>
+        <label>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Tu contraseña" required/></label>
+        {error && <p className="login-error" role="alert">{error}</p>}
+        <button disabled={submitting}>{submitting ? "Ingresando…" : "Ingresar al ruteador"} <span>→</span></button>
+      </form>
+      <small className="login-help">La base visible es siempre la última publicada por Administrador para cada país.</small>
+    </section>
+    <section className="login-visual" aria-hidden="true"><div className="login-route route-a"></div><div className="login-route route-b"></div><span className="login-pin pin-one">1</span><span className="login-pin pin-two">2</span><span className="login-pin pin-three">3</span><div><p>RUTAS COMPARTIDAS</p><strong>Un solo punto de partida para todo el equipo.</strong></div></section>
   </main>;
 }
 

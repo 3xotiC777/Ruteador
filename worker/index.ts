@@ -5,6 +5,12 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  UPLOADS: R2Bucket;
+  ADMIN_USERNAME: string;
+  ADMIN_PASSWORD: string;
+  FIELD_USERNAME: string;
+  FIELD_PASSWORD: string;
+  SESSION_SECRET: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
