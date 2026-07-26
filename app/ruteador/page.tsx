@@ -117,6 +117,14 @@ function PlannerMap({
     if (!containerRef.current) return;
     let disposed = false;
     let routeMap: import("leaflet").Map | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    const refreshMapSize = () => routeMap?.invalidateSize({ pan: false });
+    const refreshVisibleMap = () => {
+      if (document.visibilityState === "visible") refreshMapSize();
+    };
+
+    window.addEventListener("resize", refreshMapSize);
+    document.addEventListener("visibilitychange", refreshVisibleMap);
 
     void import("leaflet").then((L) => {
       if (disposed || !containerRef.current) return;
@@ -165,10 +173,17 @@ function PlannerMap({
       if (bounds.length === 1) routeMap.setView(bounds[0], 16);
       else if (bounds.length > 1) routeMap.fitBounds(bounds, { padding: [44, 44], maxZoom: 16 });
       else routeMap.setView([18.7357, -70.1627], 8);
+
+      resizeObserver = new ResizeObserver(refreshMapSize);
+      resizeObserver.observe(containerRef.current);
+      window.requestAnimationFrame(() => window.requestAnimationFrame(refreshMapSize));
     });
 
     return () => {
       disposed = true;
+      window.removeEventListener("resize", refreshMapSize);
+      document.removeEventListener("visibilitychange", refreshVisibleMap);
+      resizeObserver?.disconnect();
       routeMap?.remove();
     };
   }, [signature, orderByKey, onSelectStart, onToggleSupplement, ordered, points, startKey, supplementalKeys, userLocation]);
@@ -267,14 +282,6 @@ export default function AuditorRouterPage() {
       <button className={styles.closeButton} onClick={() => window.close()}>Cerrar pestaña ×</button>
     </header>
 
-    <section className={styles.summary}>
-      <div><span>1</span><p><b>Escoge el inicio</b><small>En el mapa o en la lista</small></p></div>
-      <i></i>
-      <div className={startKey ? styles.ready : ""}><span>2</span><p><b>Revisa el orden</b><small>Calculado por cercanía</small></p></div>
-      <i></i>
-      <div className={startKey ? styles.ready : ""}><span>3</span><p><b>Abre la ruta</b><small>Google Maps te guiará</small></p></div>
-    </section>
-
     <section className={styles.workspace}>
       <div className={styles.mapPanel}>
         <PlannerMap
@@ -296,7 +303,7 @@ export default function AuditorRouterPage() {
 
       <aside className={styles.plannerPanel}>
         {!startPoint ? <>
-          <div className={styles.panelIntro}><span>PASO 1</span><h2>¿Con cuál punto deseas iniciar?</h2><p>Elige un titular con coordenadas. A partir de ese punto ordenaremos los demás por cercanía.</p></div>
+          <div className={styles.panelIntro}><h2>¿Con cuál punto deseas iniciar?</h2><p>Elige un titular con coordenadas. A partir de ese punto ordenaremos los demás por cercanía.</p></div>
           <button className={styles.gpsButton} onClick={useCurrentLocation}>⌖ Sugerir el más cercano a mí</button>
           {locationStatus && <p className={styles.locationStatus}>{locationStatus}</p>}
           <label className={styles.search}><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar titular por nombre, código o ruta"/></label>
