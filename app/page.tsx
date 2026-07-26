@@ -52,7 +52,7 @@ const COUNTRY_PROFILES: Record<CountryId, CountryProfile> = {
     rules: [
       { field: "MUESTRA CUMPL.", detail: "Solo “Cargar”" },
       { field: "export.Estado", detail: "Vacío = pendiente" },
-      { field: "DIA", detail: "Del día 1 hasta el corte" },
+      { field: "DIA", detail: "Día elegido; arrastre anterior opcional" },
       { field: "Tabla11.auditor", detail: "Archivo por auditor" },
       { field: "SELECCION", detail: "Segmentos T y S" },
       { field: "CLIENTE FIJO 30%", detail: "Subsegmento fijo" },
@@ -77,7 +77,7 @@ const COUNTRY_PROFILES: Record<CountryId, CountryProfile> = {
     rules: [
       { field: "MUESTRA CUMPL.", detail: "Solo “Cargar” · columna V" },
       { field: "export.Estado", detail: "Vacío · columna U" },
-      { field: "DIA", detail: "Valores 1 hasta el corte · columna T" },
+      { field: "DIA", detail: "Día elegido; arrastre anterior opcional · columna T" },
       { field: "MT", detail: "Archivo por MT · columna R" },
       { field: "SELECCION", detail: "T y combinado S1/S2/S3" },
       { field: "FIJO / Tipo Canal", detail: "T_FIJOS y T_ON" },
@@ -102,7 +102,7 @@ const COUNTRY_PROFILES: Record<CountryId, CountryProfile> = {
     rules: [
       { field: "MUESTRA CUMPL.", detail: "Solo “Cargar” · columna AC" },
       { field: "EXPORT.Estado", detail: "Vacío · columna AB" },
-      { field: "DIA", detail: "Valores 1 hasta el corte · columna AA" },
+      { field: "DIA", detail: "Día elegido; arrastre anterior opcional · columna AA" },
       { field: "MT", detail: "Archivo por MT · columna Y" },
       { field: "SELECCION", detail: "T y combinado S1/S2/S3" },
       { field: "Cliente Fijo / Tipo de Canal", detail: "T_FIJOS y T_ON" },
@@ -125,7 +125,7 @@ const COUNTRY_PROFILES: Record<CountryId, CountryProfile> = {
     rules: [
       { field: "DESCARGAR", detail: "Solo “Cargar” · columna S" },
       { field: "EXPORT.Estado", detail: "Vacío · columna R" },
-      { field: "DIA", detail: "Menor o igual al corte · columna P" },
+      { field: "DIA", detail: "Día elegido; menor o igual solo con arrastre · columna P" },
       { field: "Responsable", detail: "Archivo por auditor · columna M" },
       { field: "Cargue A:B", detail: "Corte por auditor cuando existe" },
       { field: "PDV FIJO/PRIORITARIO", detail: "Archivo _T_FIJO" },
@@ -229,6 +229,99 @@ const downloadCsv = (file: ExportFile) => {
   const href = URL.createObjectURL(new Blob(["\uFEFF" + toCsv(file.rows)], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a"); link.href = href; link.download = file.name; link.click(); URL.revokeObjectURL(href);
 };
+const crc32Table = Uint32Array.from({ length: 256 }, (_, index) => {
+  let crc = index;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (crc >>> 1) ^ 0xEDB88320 : crc >>> 1;
+  return crc >>> 0;
+});
+const crc32 = (bytes: Uint8Array) => {
+  let crc = 0xFFFFFFFF;
+  for (const byte of bytes) crc = (crc >>> 8) ^ crc32Table[(crc ^ byte) & 0xFF];
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+};
+const zipDateTime = () => {
+  const now = new Date();
+  const year = Math.max(1980, now.getFullYear());
+  return {
+    time: (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate(),
+  };
+};
+const joinBytes = (parts: Uint8Array[]) => {
+  const joined = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { joined.set(part, offset); offset += part.length; }
+  return joined;
+};
+const createCsvZip = (files: ExportFile[]) => {
+  const encoder = new TextEncoder();
+  const { time, date } = zipDateTime();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let localOffset = 0;
+
+  for (const file of files) {
+    const safeName = file.name.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_");
+    const name = encoder.encode(safeName);
+    const data = encoder.encode("\uFEFF" + toCsv(file.rows));
+    const checksum = crc32(data);
+    const local = new Uint8Array(30 + name.length + data.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034B50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, time, true);
+    localView.setUint16(12, date, true);
+    localView.setUint32(14, checksum, true);
+    localView.setUint32(18, data.length, true);
+    localView.setUint32(22, data.length, true);
+    localView.setUint16(26, name.length, true);
+    local.set(name, 30);
+    local.set(data, 30 + name.length);
+    localParts.push(local);
+
+    const central = new Uint8Array(46 + name.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014B50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, time, true);
+    centralView.setUint16(14, date, true);
+    centralView.setUint32(16, checksum, true);
+    centralView.setUint32(20, data.length, true);
+    centralView.setUint32(24, data.length, true);
+    centralView.setUint16(28, name.length, true);
+    centralView.setUint32(42, localOffset, true);
+    central.set(name, 46);
+    centralParts.push(central);
+    localOffset += local.length;
+  }
+
+  const centralDirectory = joinBytes(centralParts);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054B50, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralDirectory.length, true);
+  endView.setUint32(16, localOffset, true);
+  const archive = joinBytes([...localParts, centralDirectory, end]);
+  return new Blob([archive.buffer as ArrayBuffer], { type: "application/zip" });
+};
+const downloadCsvZip = (files: ExportFile[], fileName: string) => {
+  if (!files.length) return;
+  const href = URL.createObjectURL(createCsvZip(files));
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = fileName.endsWith(".zip") ? fileName : `${fileName}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(href), 1_000);
+};
 const openAuditorRouter = (auditor: string, country: string, rows: Row[]) => {
   const storageKey = `${ROUTER_STORAGE_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const plan: RouterPlan = {
@@ -265,11 +358,16 @@ export default function Home() {
   const [rows, setRows] = useState<Row[]>([]);
   const [sourceName, setSourceName] = useState("Consultando base compartida…");
   const [day, setDay] = useState(1);
+  const [dayInput, setDayInput] = useState("1");
+  const [includeCarryover, setIncludeCarryover] = useState(false);
   const [tab, setTab] = useState<"inicio" | "rutas" | "dashboard" | "base">("inicio");
   const [role, setRole] = useState<UserRole | null>(null);
   const [username, setUsername] = useState("");
   const [authLoading, setAuthLoading] = useState(true);
   const [country, setCountry] = useState<CountryId>("rd");
+  const [dashboardCountry, setDashboardCountry] = useState<CountryId>("rd");
+  const [dashboardBaseRows, setDashboardBaseRows] = useState<Row[]>([]);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
   const [auditorLimits, setAuditorLimits] = useState<AuditorLimits>({});
   const [extraIds, setExtraIds] = useState<string[]>([]);
   const [search, setSearch] = useState("");
@@ -284,14 +382,19 @@ export default function Home() {
   const baseVersions = useRef<Partial<Record<CountryId, number>>>({});
   const visitVersion = useRef(0);
   const countryProfile = COUNTRY_PROFILES[country];
+  const dashboardCountryProfile = COUNTRY_PROFILES[dashboardCountry];
   const hasAuditorLimits = Object.keys(auditorLimits).length > 0;
 
   const visitKeys = useMemo(() => new Set(visitSnapshot?.keys ?? []), [visitSnapshot]);
+  const visitIds = useMemo(() => new Set((visitSnapshot?.keys ?? []).map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean)), [visitSnapshot]);
   const hasExportVisit = useCallback((row: Row) => {
     const id = normalizeVisitId(idOf(row));
-    return Boolean(id) && COUNTRY_VISIT_ALIASES[country].some((countryAlias) => visitKeys.has(`${countryAlias}|${id}`));
-  }, [country, visitKeys]);
-  const isVisited = useCallback((row: Row) => Boolean(statusOf(row)) || hasExportVisit(row), [hasExportVisit]);
+    return Boolean(id) && (visitIds.has(id) || COUNTRY_VISIT_ALIASES[country].some((countryAlias) => visitKeys.has(`${countryAlias}|${id}`)));
+  }, [country, visitIds, visitKeys]);
+  const isVisited = useCallback((row: Row) => {
+    const excelStatus = statusOf(row);
+    return Boolean(excelStatus && normalize(excelStatus) !== "NULL") || hasExportVisit(row);
+  }, [hasExportVisit]);
   const scheduled = useMemo(() => rows.filter((row) => dayOf(row) === day), [day, rows]);
   const extras = useMemo(() => rows.filter((row) => extraIds.includes(idOf(row))), [extraIds, rows]);
   const filteredPoints = useMemo(() => rows.filter((row) => {
@@ -306,10 +409,32 @@ export default function Home() {
     const done = points.filter(isVisited).length;
     return { auditor, total: points.length, done, pending: points.length - done };
   }), [isVisited, scheduled]);
-  const bySelection = useMemo(() => ["T", "S"].map((selection) => {
-    const points = scheduled.filter((row) => selectionGroupOf(row) === selection);
-    return { selection, total: points.length, done: points.filter(isVisited).length };
-  }), [isVisited, scheduled]);
+  const dashboardHasExportVisit = useCallback((row: Row) => {
+    const id = normalizeVisitId(idOf(row));
+    return Boolean(id) && (visitIds.has(id) || COUNTRY_VISIT_ALIASES[dashboardCountry].some((countryAlias) => visitKeys.has(`${countryAlias}|${id}`)));
+  }, [dashboardCountry, visitIds, visitKeys]);
+  const dashboardIsVisited = useCallback((row: Row) => {
+    const excelStatus = statusOf(row);
+    return Boolean(excelStatus && normalize(excelStatus) !== "NULL") || dashboardHasExportVisit(row);
+  }, [dashboardHasExportVisit]);
+  const dashboardRows = useMemo(() => dashboardBaseRows.filter((row) => dayOf(row) >= 1), [dashboardBaseRows]);
+  const dashboardVisits = useMemo(() => dashboardRows.filter(dashboardIsVisited), [dashboardRows, dashboardIsVisited]);
+  const dashboardExportMatches = useMemo(() => dashboardBaseRows.filter(dashboardHasExportVisit).length, [dashboardBaseRows, dashboardHasExportVisit]);
+  const dashboardCompletion = dashboardRows.length ? Math.round(dashboardVisits.length / dashboardRows.length * 100) : 0;
+  const dashboardAuditorProgress = useMemo(() => Array.from(new Set(dashboardRows.map(auditorOf).filter(Boolean))).map((auditor) => {
+    const points = dashboardRows.filter((row) => auditorOf(row) === auditor);
+    const done = points.filter(dashboardIsVisited).length;
+    return { auditor, total: points.length, done, pending: points.length - done };
+  }).sort((a, b) => b.pending - a.pending || a.auditor.localeCompare(b.auditor)), [dashboardRows, dashboardIsVisited]);
+  const dashboardBySelection = useMemo(() => ["T", "S"].map((selection) => {
+    const points = dashboardRows.filter((row) => selectionGroupOf(row) === selection);
+    return { selection, total: points.length, done: points.filter(dashboardIsVisited).length };
+  }), [dashboardRows, dashboardIsVisited]);
+  const dashboardDayStats = useMemo(() => Array.from(new Set(dashboardRows.map(dayOf))).sort((a, b) => a - b).map((scheduledDay) => {
+    const titulars = dashboardRows.filter((row) => dayOf(row) === scheduledDay && isTitular(row));
+    const done = titulars.filter(dashboardIsVisited).length;
+    return { day: scheduledDay, total: titulars.length, done, pending: titulars.length - done };
+  }).filter((item) => item.total > 0), [dashboardRows, dashboardIsVisited]);
   const routeAuditors = useMemo(() => Array.from(new Set(routeRows.map(auditorOf).filter(Boolean))), [routeRows]);
   const mapPoints = useMemo(() => routeRows.filter((row) => auditorOf(row) === mapAuditor).filter(coordinatesOf), [routeRows, mapAuditor]);
   const mapBounds = useMemo(() => {
@@ -317,6 +442,17 @@ export default function Home() {
     if (!points.length) return null;
     return { minLat: Math.min(...points.map((point) => point.lat)), maxLat: Math.max(...points.map((point) => point.lat)), minLng: Math.min(...points.map((point) => point.lng)), maxLng: Math.max(...points.map((point) => point.lng)) };
   }, [mapPoints]);
+
+  const setActiveDay = useCallback((nextDay: number) => {
+    const safeDay = Math.min(31, Math.max(1, Math.trunc(nextDay) || 1));
+    setDay(safeDay);
+    setDayInput(String(safeDay));
+  }, []);
+
+  const commitDayInput = useCallback(() => {
+    const parsedDay = Number.parseInt(dayInput, 10);
+    setActiveDay(Number.isFinite(parsedDay) ? parsedDay : day);
+  }, [day, dayInput, setActiveDay]);
 
   const clearRouteWork = useCallback(() => {
     setExports([]);
@@ -346,7 +482,7 @@ export default function Home() {
         setRows([]);
         setSourceName(`Sin base compartida · ${profile.label}`);
         setAuditorLimits({});
-        setDay(1);
+        setActiveDay(1);
         delete baseVersions.current[nextCountry];
         if (options.resetWork) clearRouteWork();
         if (options.announce) setNotice(`Todavía no hay una base activa para ${profile.label}. Administrador debe cargarla una sola vez.`);
@@ -360,14 +496,14 @@ export default function Home() {
       setRows(body.rows);
       setSourceName(body.sourceName);
       setAuditorLimits(body.auditorLimits ?? {});
-      setDay(body.defaultDay || 1);
+      setActiveDay(body.defaultDay || 1);
       baseVersions.current[nextCountry] = body.updatedAt;
       if (options.resetWork) clearRouteWork();
       if (options.announce) setNotice(`Base compartida de ${profile.label} activada.`);
     } catch (error) {
       if (options.announce) setNotice(error instanceof Error ? error.message : "No fue posible consultar la base compartida.");
     }
-  }, [clearRouteWork]);
+  }, [clearRouteWork, setActiveDay]);
 
   const activateVisitSnapshot = useCallback(async (announce = false) => {
     try {
@@ -430,6 +566,40 @@ export default function Home() {
     };
   }, [activateSharedBase, activateVisitSnapshot, country, role]);
 
+  useEffect(() => {
+    if (!role || tab !== "dashboard") return;
+    let active = true;
+    setDashboardLoading(true);
+    void (async () => {
+      try {
+        const response = await fetch(`/api/bases/${dashboardCountry}`, { cache: "no-store", credentials: "same-origin" });
+        if (response.status === 401) {
+          if (active) {
+            setRole(null);
+            setUsername("");
+            setDashboardBaseRows([]);
+          }
+          return;
+        }
+        if (response.status === 404) {
+          if (active) setDashboardBaseRows([]);
+          return;
+        }
+        const body = await response.json() as CountryBase & { error?: string };
+        if (!response.ok) throw new Error(body.error || "No fue posible consultar la base del dashboard.");
+        if (active) setDashboardBaseRows(body.rows);
+      } catch (error) {
+        if (active) {
+          setDashboardBaseRows([]);
+          setNotice(error instanceof Error ? error.message : "No fue posible consultar la base del dashboard.");
+        }
+      } finally {
+        if (active) setDashboardLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [dashboardCountry, role, tab]);
+
   const loadWorkbook = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -471,7 +641,7 @@ export default function Home() {
       if (!response.ok) throw new Error(saved.error || "No fue posible guardar la base compartida.");
 
       setCountry(effectiveCountry); setRows(saved.rows); setSourceName(saved.sourceName); setAuditorLimits(saved.auditorLimits);
-      clearRouteWork(); setDay(saved.defaultDay); baseVersions.current[effectiveCountry] = saved.updatedAt;
+      clearRouteWork(); setActiveDay(saved.defaultDay); baseVersions.current[effectiveCountry] = saved.updatedAt;
       const detectedNote = effectiveCountry !== country ? ` Se detectó automáticamente ${effectiveProfile.label}.` : "";
       const costaRicaNote = effectiveCountry === "cr" && !cargueName ? " El archivo no incluye Cargue; se usará el día seleccionado como corte para todos los responsables." : "";
       setNotice(`${loaded.length.toLocaleString("es-DO")} PDV publicados para todo el equipo.${detectedNote}${costaRicaNote}`);
@@ -539,9 +709,10 @@ export default function Home() {
       if (!response.ok) throw new Error(saved.error || "No fue posible guardar el export compartido.");
 
       const savedKeys = new Set(saved.keys);
+      const savedIds = new Set(saved.keys.map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
       const matchesCurrentBase = rows.filter((row) => {
         const id = normalizeVisitId(idOf(row));
-        return Boolean(id) && COUNTRY_VISIT_ALIASES[country].some((countryAlias) => savedKeys.has(`${countryAlias}|${id}`));
+        return Boolean(id) && (savedIds.has(id) || COUNTRY_VISIT_ALIASES[country].some((countryAlias) => savedKeys.has(`${countryAlias}|${id}`)));
       }).length;
       visitVersion.current = saved.uploadedAt;
       setVisitSnapshot(saved);
@@ -583,11 +754,18 @@ export default function Home() {
       setNotice(`Carga primero el Excel de ${countryProfile.label} desde Base de datos.`);
       return;
     }
+    if (!visitSnapshot) {
+      setNotice("No se generaron rutas: primero carga el export diario para excluir los PDV ya visitados.");
+      return;
+    }
     const base = rows.filter((row) => {
       const scheduledDay = dayOf(row);
       if (countryProfile.engine === "cr" && hasAuditorLimits && auditorLimits[auditorOf(row)] === undefined) return false;
-      const rowCutoff = countryProfile.engine === "cr" ? auditorLimits[auditorOf(row)] ?? day : day;
-      return shouldLoad(row) && !isVisited(row) && scheduledDay >= 1 && scheduledDay <= rowCutoff;
+      const rowTargetDay = countryProfile.engine === "cr" ? auditorLimits[auditorOf(row)] ?? day : day;
+      const matchesDay = includeCarryover
+        ? scheduledDay >= 1 && scheduledDay <= rowTargetDay
+        : scheduledDay === rowTargetDay;
+      return shouldLoad(row) && !isVisited(row) && matchesDay;
     });
     const all = [...base, ...extras.filter((row) => !isVisited(row) && !base.some((baseRow) => idOf(baseRow) === idOf(row)))];
     const files: ExportFile[] = [];
@@ -621,8 +799,9 @@ export default function Home() {
       segments.filter(([, points]) => points.length).forEach(([segment, points]) => files.push({ name: `${auditor}_${segment}.csv`, rows: points }));
     }
     setExports(files); setRouteRows(all); setMapAuditor(auditorOf(all[0] ?? {})); setTab("rutas");
-    const cutoffDescription = countryProfile.engine === "cr" && hasAuditorLimits ? "los cortes de la hoja Cargue" : `el corte ${day}`;
-    setNotice(files.length ? `${files.length} archivos CSV de ${countryProfile.label} listos con ${cutoffDescription}. ${extras.length ? `${extras.length} excepción(es) incluida(s).` : ""}` : `No se encontraron PDV pendientes para ${cutoffDescription}. Revisa los campos indicados en las reglas de ${countryProfile.label}.`);
+    const selectedDayDescription = countryProfile.engine === "cr" && hasAuditorLimits ? "los días definidos en Cargue" : `el día ${day}`;
+    const scopeDescription = includeCarryover ? `${selectedDayDescription}, incluyendo pendientes anteriores` : `solo ${selectedDayDescription}`;
+    setNotice(files.length ? `${files.length} archivos CSV de ${countryProfile.label} listos con ${scopeDescription}. ${extras.length ? `${extras.length} excepción(es) incluida(s).` : ""}` : `No se encontraron PDV pendientes para ${scopeDescription}. Revisa los campos indicados en las reglas de ${countryProfile.label}.`);
   };
 
   const toggleExtra = (id: string) => setExtraIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -649,6 +828,12 @@ export default function Home() {
       </nav>
       <div className="sidebar-footer"><div className="avatar">{username.slice(0, 2).toUpperCase()}</div><div><strong>{username}</strong><small>{role}</small></div></div>
     </aside>
+    <nav className="mobile-nav" aria-label="Navegación principal">
+      <button className={tab === "inicio" ? "active" : ""} onClick={() => setTab("inicio")}><i>⌂</i><span>Resumen</span></button>
+      <button className={tab === "rutas" ? "active" : ""} onClick={() => setTab("rutas")}><i>⌁</i><span>Rutas</span></button>
+      <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}><i>◔</i><span>Avance</span></button>
+      {fieldMode && <button className={tab === "base" ? "active" : ""} onClick={() => setTab("base")}><i>▣</i><span>Base</span></button>}
+    </nav>
     <section className="app-shell">
       <header className="topbar"><div className="crumb"><span>Ruteador</span><b>/</b><strong>{tab === "inicio" ? "Resumen operativo" : tab[0].toUpperCase() + tab.slice(1)}</strong></div><div className="top-actions"><span className={visitSnapshot ? "sync" : "sync sync-pending"}><b></b>{visitSnapshot ? ` Export · ${new Date(visitSnapshot.uploadedAt).toLocaleDateString("es-DO")}` : " Sin export diario"}</span><div className="signed-user"><span>{username}</span><small>{role}</small></div><button className="logout-button" onClick={logout}>Salir</button></div></header>
       <div className="content">
@@ -659,25 +844,31 @@ export default function Home() {
           <section className="two-col"><article className="panel progress-panel"><div className="panel-head"><div><p className="eyebrow">AVANCE GENERAL</p><h2>Cumplimiento de hoy</h2></div><button className="mini-link" onClick={() => setTab("dashboard")}>Ver detalle →</button></div><div className="completion"><div className="donut" style={{ "--progress": `${completion * 3.6}deg` } as React.CSSProperties}><div><b>{completion}%</b><small>completado</small></div></div><div className="progress-list">{auditorProgress.slice(0, 3).map((item) => <div className="progress-row" key={item.auditor}><span className="person-dot">{item.auditor.slice(0, 1)}</span><div><strong>{item.auditor}</strong><small>{item.done} visitados · {item.pending} pendientes</small></div><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b></div>)}</div></div></article><article className="panel map-preview"><div className="panel-head"><div><p className="eyebrow">MAPA DEL DÍA</p><h2>Rutas segmentadas</h2></div><button className="mini-link" onClick={() => setTab("rutas")}>Abrir rutas →</button></div><div className="map-grid"><span className="street s1"></span><span className="street s2"></span><span className="street s3"></span><span className="map-pin p1">●</span><span className="map-pin p2">●</span><span className="map-pin p3">●</span><span className="map-pin p4">●</span><div className="map-legend"><b><i></i> Selección T</b><b><i></i> Selección S</b></div></div></article></section>
         </>}
         {tab === "rutas" && <section className="routes-view">
-          <div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS · {countryProfile.shortLabel}</p><h1>Prepara la operación de campo</h1><p>{countryProfile.description}</p></div><div className="date-chip">{countryProfile.cutoffLabel} <strong>{country === "cr" && hasAuditorLimits ? "por auditor" : day}</strong></div></div>
+          <div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS · {countryProfile.shortLabel}</p><h1>Prepara la operación de campo</h1><p>{countryProfile.description}</p></div><div className="date-chip">{countryProfile.cutoffLabel} <strong>{country === "cr" && hasAuditorLimits ? "por auditor" : day}</strong><small>{includeCarryover ? "Con pendientes anteriores" : "Solo el día elegido"}</small></div></div>
           <div className="route-controls panel">
             <div className="control"><label>País / operación</label><select aria-label="País de operación" value={country} onChange={(event) => changeCountry(event.target.value as CountryId)}>{COUNTRY_IDS.map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select></div>
-            <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="number" min="1" max="31" value={day} onChange={(event) => setDay(Number(event.target.value) || 1)}/>{country === "cr" && hasAuditorLimits && <small>Cargue define el corte por responsable</small>}</div>
+            <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={dayInput} onChange={(event) => setDayInput(event.target.value.replace(/\D/g, "").slice(0, 2))} onBlur={commitDayInput} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} aria-label="Escribir día de campo"/><small>Escribe el número y presiona Enter</small></div>
             <div className="control source"><label>Base activa</label><strong>▣ {sourceName}</strong><small>{rows.length.toLocaleString("es-DO")} PDV · {exportMatches.toLocaleString("es-DO")} visitados en export</small></div>
             <button className="button primary generate" onClick={createRoutes} disabled={!rows.length}>Cargar rutas <span>→</span></button>
+            <label className="carryover-toggle"><input type="checkbox" checked={includeCarryover} onChange={(event) => setIncludeCarryover(event.target.checked)}/><span><b>Incluir pendientes de días anteriores</b><small>Actívalo solo cuando quieras el arrastre acumulado de la macro.</small></span></label>
           </div>
-          <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {country === "cr" && hasAuditorLimits ? "cortes por responsable" : `${countryProfile.cutoffLabel} ${day}`}</small></div><button className="button secondary" onClick={() => exports.forEach(downloadCsv)}>Descargar todos</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, define el corte y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
+          <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {includeCarryover ? "día elegido + pendientes anteriores" : "solo el día elegido"}</small></div><button className="button secondary" onClick={() => downloadCsvZip(exports, `Rutas_${countryProfile.shortLabel}_dia_${day}.zip`)}>Descargar ZIP</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, escribe el día y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
         </section>}
         {tab === "rutas" && routeAuditors.length > 0 && <section className="panel route-map-panel"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Puntos a visitar por auditor</h2><p>Los botones abren Google Maps con la ruta de conducción. Google admite hasta 25 puntos por apertura.</p></div></div><div className="auditor-route-list">{routeAuditors.map((auditor) => { const points = routeRows.filter((row) => auditorOf(row) === auditor); return <div className={mapAuditor === auditor ? "auditor-route active" : "auditor-route"} key={auditor}><button onClick={() => setMapAuditor(auditor)}><i>{auditor.slice(0, 1)}</i><span><strong>{auditor}</strong><small>{points.length} PDV pendientes</small></span><b>Ver puntos</b></button><a href={mapsRouteUrl(points)} target="_blank" rel="noreferrer">Abrir en Google Maps ↗</a></div>; })}</div><div className="map-canvas" aria-label={`Mapa de puntos de ${mapAuditor}`}><div className="map-title"><span>⌖</span><div><strong>{mapAuditor || "Selecciona un auditor"}</strong><small>{mapPoints.length} puntos con coordenadas</small></div></div><div className="map-road road-one"></div><div className="map-road road-two"></div><div className="map-road road-three"></div>{mapBounds && mapPoints.map((row, index) => { const point = coordinatesOf(row)!; const xRange = Math.max(mapBounds.maxLng - mapBounds.minLng, .01); const yRange = Math.max(mapBounds.maxLat - mapBounds.minLat, .01); const left = 8 + ((point.lng - mapBounds.minLng) / xRange) * 84; const top = 87 - ((point.lat - mapBounds.minLat) / yRange) * 75; return <span className="preview-pin" style={{ left: `${left}%`, top: `${top}%` }} title={nameOf(row)} key={`${idOf(row)}-${index}`}>{index + 1}</span>; })}<div className="map-scale">Puntos con LATITUD / LONGITUD</div></div></section>}
-        {tab === "dashboard" && <section className="dashboard-view"><div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN</p><h1>Avance de visitas</h1><p>Cruce de <b>País + Código DN</b> con el export diario; también conserva cualquier valor existente en <b>export.Estado</b>.</p></div><div className="dashboard-filter"><label>Día programado</label><input type="number" value={day} min="1" max="31" onChange={(event) => setDay(Number(event.target.value) || 1)}/></div></div><section className="metrics"><Metric label="PDV programados" value={scheduled.length} change={`Día ${day}`} tone="blue" icon="⌖"/><Metric label="Visitados" value={visits.length} change={visitSnapshot ? "Excel + export diario" : "Estado del Excel"} tone="mint" icon="✓"/><Metric label="Pendientes" value={scheduled.length - visits.length} change="Disponibles para rutear" tone="orange" icon="◷"/><Metric label="Cumplimiento" value={`${completion}%`} change="Avance programado" tone="purple" icon="↗"/></section><section className="dashboard-grid"><article className="panel"><div className="panel-head"><div><p className="eyebrow">POR AUDITOR</p><h2>Seguimiento individual</h2></div></div><div className="data-table"><div className="table-row header"><span>Auditor</span><span>Programados</span><span>Visitados</span><span>Pendientes</span><span>Avance</span></div>{auditorProgress.map((item) => <div className="table-row" key={item.auditor}><span><i className="person-dot">{item.auditor[0]}</i>{item.auditor}</span><span>{item.total}</span><span className="done">{item.done}</span><span>{item.pending}</span><span><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b><i className="tiny-bar"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }}></i></i></span></div>)}</div></article><article className="panel selection-card"><p className="eyebrow">POR SELECCIÓN</p><h2>Prioridad de ejecución</h2>{bySelection.map((group) => { const percent = group.total ? Math.round(group.done / group.total * 100) : 0; return <div className="selection-row" key={group.selection}><div><span className={group.selection === "T" ? "selection-label t" : "selection-label s"}>{group.selection}</span><p><strong>Selección {group.selection}</strong><small>{group.done} de {group.total} visitados</small></p></div><b>{percent}%</b><div className="wide-bar"><i style={{ width: `${percent}%` }}></i></div></div>; })}<div className="status-note"><span>i</span>{visitSnapshot ? <>{exportMatches.toLocaleString("es-DO")} PDV de esta base coinciden con <b>{visitSnapshot.sourceName}</b>.</> : <>Carga el export diario desde Administración para cruzar las visitas automáticamente.</>}</div></article></section></section>}
+        {tab === "dashboard" && <section className="dashboard-view">
+          <div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN · MES COMPLETO</p><h1>Avance de visitas</h1><p>Esta vista ya no depende del día elegido en Rutas. Cruza el <b>ID_de_PDV</b> único del export con <b>Código DN</b> y conserva cualquier valor existente en <b>export.Estado</b>.</p></div><label className="dashboard-country-filter"><span>PAÍS / OPERACIÓN</span><select aria-label="Filtrar dashboard por país" value={dashboardCountry} onChange={(event) => setDashboardCountry(event.target.value as CountryId)}>{COUNTRY_IDS.map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select><small>{dashboardLoading ? "Actualizando información…" : `${dashboardCountryProfile.shortLabel} · Todos los días`}</small></label></div>
+          <section className="metrics"><Metric label="PDV programados" value={dashboardRows.length} change="Universo completo" tone="blue" icon="⌖"/><Metric label="Visitados" value={dashboardVisits.length} change={visitSnapshot ? "Excel + export diario" : "Estado del Excel"} tone="mint" icon="✓"/><Metric label="Pendientes" value={dashboardRows.length - dashboardVisits.length} change="Todos los días" tone="orange" icon="◷"/><Metric label="Cumplimiento" value={`${dashboardCompletion}%`} change="Avance del universo" tone="purple" icon="↗"/></section>
+          <article className="panel day-progress-card"><div className="panel-head"><div><p className="eyebrow">TITULARES POR DÍA</p><h2>Cuántos titulares ya se visitaron</h2><p>El día corresponde a la programación del universo, no al filtro de Rutas.</p></div><span className="day-total">{dashboardDayStats.reduce((total, item) => total + item.done, 0).toLocaleString("es-DO")} visitados</span></div><div className="day-progress-list">{dashboardDayStats.map((item) => { const percent = item.total ? Math.round(item.done / item.total * 100) : 0; return <div className="day-progress-row" key={item.day}><span>Día <b>{item.day}</b></span><div><i style={{ width: `${percent}%` }}></i></div><strong>{item.done}<small> / {item.total}</small></strong><em>{item.pending} pendientes</em></div>; })}{!dashboardDayStats.length && <p className="empty">No hay titulares con día programado en esta base.</p>}</div></article>
+          <section className="dashboard-grid"><article className="panel"><div className="panel-head"><div><p className="eyebrow">POR AUDITOR · TODOS LOS DÍAS</p><h2>Seguimiento individual</h2></div></div><div className="data-table"><div className="table-row header"><span>Auditor</span><span>Programados</span><span>Visitados</span><span>Pendientes</span><span>Avance</span></div>{dashboardAuditorProgress.map((item) => <div className="table-row" key={item.auditor}><span><i className="person-dot">{item.auditor[0]}</i>{item.auditor}</span><span>{item.total}</span><span className="done">{item.done}</span><span>{item.pending}</span><span><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b><i className="tiny-bar"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }}></i></i></span></div>)}</div></article><article className="panel selection-card"><p className="eyebrow">POR SELECCIÓN · TODOS LOS DÍAS</p><h2>Prioridad de ejecución</h2>{dashboardBySelection.map((group) => { const percent = group.total ? Math.round(group.done / group.total * 100) : 0; return <div className="selection-row" key={group.selection}><div><span className={group.selection === "T" ? "selection-label t" : "selection-label s"}>{group.selection}</span><p><strong>Selección {group.selection}</strong><small>{group.done} de {group.total} visitados</small></p></div><b>{percent}%</b><div className="wide-bar"><i style={{ width: `${percent}%` }}></i></div></div>; })}<div className="status-note"><span>i</span>{visitSnapshot ? <>{dashboardExportMatches.toLocaleString("es-DO")} PDV de esta base coinciden con <b>{visitSnapshot.sourceName}</b>.</> : <>Carga el export diario desde Administración para cruzar las visitas automáticamente.</>}</div></article></section>
+        </section>}
         {tab === "base" && fieldMode && <section className="base-view">
           <div className="page-heading"><div><p className="eyebrow">ADMINISTRACIÓN · {countryProfile.shortLabel}</p><h1>Base de datos y configuración</h1><p>Actualiza los universos cuando cambien y carga un único export diario para cruzar las visitas de todos los países.</p></div><div className="country-base-chip">{countryProfile.label}</div></div>
           <div className="base-grid">
             <label className="upload-card"><input type="file" accept=".xlsx,.xls" onChange={loadWorkbook}/><span className="upload-icon">↥</span><strong>Cargar nueva base</strong><p>{countryProfile.uploadHint}</p><b>Seleccionar archivo</b></label>
-            <article className="panel base-status"><p className="eyebrow">BASE ACTIVA</p><h2>{sourceName}</h2><div className="base-stat"><strong>{rows.length.toLocaleString("es-DO")}</strong><span>PDV en Universo</span></div><div className="base-status-list"><p><span>✓</span> Hoja UNIVERSO detectada</p><p><span>✓</span> Perfil {countryProfile.shortLabel} activo</p><p><span>✓</span> Cruce por Código DN preparado</p>{country === "cr" && <p><span>{hasAuditorLimits ? "✓" : "i"}</span>{hasAuditorLimits ? "Cortes por responsable desde Cargue" : "Corte general con el día seleccionado"}</p>}</div></article>
+            <article className="panel base-status"><p className="eyebrow">BASE ACTIVA</p><h2>{sourceName}</h2><div className="base-stat"><strong>{rows.length.toLocaleString("es-DO")}</strong><span>PDV en Universo</span></div><div className="base-status-list"><p><span>✓</span> Hoja UNIVERSO detectada</p><p><span>✓</span> Perfil {countryProfile.shortLabel} activo</p><p><span>✓</span> Cruce por Código DN único preparado</p>{country === "cr" && <p><span>{hasAuditorLimits ? "✓" : "i"}</span>{hasAuditorLimits ? "Día por responsable desde Cargue" : "Día escrito en el planificador"}</p>}</div></article>
           </div>
           <article className="panel visit-import">
-            <div className="visit-import-copy"><p className="eyebrow">EXPORT DIARIO · TODOS LOS PAÍSES</p><h2>Actualizar puntos visitados</h2><p>El sistema cruza <b>Pais + ID_de_PDV</b> del CSV con <b>Código DN</b> del universo. Cualquier fila con Estado se considera visitada y deja de generarse en las rutas.</p><div className="visit-requirements"><span>✓ CSV de Informes</span><span>✓ Una sola carga diaria</span><span>✓ Sin modificar los Excel</span></div></div>
+            <div className="visit-import-copy"><p className="eyebrow">EXPORT DIARIO · TODOS LOS PAÍSES</p><h2>Actualizar puntos visitados</h2><p>El sistema cruza el <b>ID_de_PDV único</b> del CSV con <b>Código DN</b> del universo; País se conserva para los resúmenes. Cualquier fila con Estado se considera visitada y deja de generarse en las rutas.</p><div className="visit-requirements"><span>✓ CSV de Informes</span><span>✓ Una sola carga diaria</span><span>✓ Sin modificar los Excel</span></div></div>
             <label className="visit-upload"><input type="file" accept=".csv,text/csv" onChange={loadVisitExport}/><span>↥</span><strong>{visitSnapshot ? "Reemplazar export diario" : "Cargar export diario"}</strong><small>Columnas requeridas: Pais, ID_de_PDV y Estado</small><b>Seleccionar CSV</b></label>
             <div className="visit-status">
               <p className="eyebrow">{visitSnapshot ? "EXPORT COMPARTIDO ACTIVO" : "SIN EXPORT CARGADO"}</p>

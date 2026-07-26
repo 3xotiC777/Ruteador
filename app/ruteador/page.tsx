@@ -12,6 +12,11 @@ const isTitular = (point: RouterPoint) => point.selection.toUpperCase() === "T";
 const isSupplement = (point: RouterPoint) => /^S\d*$/.test(point.selection.toUpperCase());
 const hasCoordinates = (point: RouterPoint): point is RouterPoint & Coordinates => point.lat !== null && point.lng !== null;
 const coordinatesOf = (point: RouterPoint): Coordinates | null => hasCoordinates(point) ? { lat: point.lat, lng: point.lng } : null;
+const navigationPlace = (point: RouterPoint) => {
+  const coordinates = coordinatesOf(point);
+  if (coordinates) return `${coordinates.lat},${coordinates.lng}`;
+  return point.address.trim() || [point.name, point.id].filter(Boolean).join(" ");
+};
 const escapeHtml = (entry: unknown) => String(entry ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character] ?? character);
 
 const distanceKm = (a: Coordinates, b: Coordinates) => {
@@ -55,37 +60,36 @@ const optimizeRoute = (points: RouterPoint[], startKey: string) => {
 };
 
 const mapChunks = (points: RouterPoint[]) => {
-  const mapped = points.filter(hasCoordinates);
-  if (mapped.length <= MAPS_SEGMENT_SIZE) return mapped.length ? [mapped] : [];
+  const navigable = points.filter((point) => Boolean(navigationPlace(point)));
+  if (navigable.length <= MAPS_SEGMENT_SIZE) return navigable.length ? [navigable] : [];
   const chunks: RouterPoint[][] = [];
   let offset = 0;
-  while (offset < mapped.length) {
-    const chunk = mapped.slice(offset, offset + MAPS_SEGMENT_SIZE);
+  while (offset < navigable.length) {
+    const chunk = navigable.slice(offset, offset + MAPS_SEGMENT_SIZE);
     chunks.push(chunk);
-    if (offset + MAPS_SEGMENT_SIZE >= mapped.length) break;
+    if (offset + MAPS_SEGMENT_SIZE >= navigable.length) break;
     offset += MAPS_SEGMENT_ADVANCE;
   }
   return chunks;
 };
 
 const mapsRouteUrl = (points: RouterPoint[]) => {
-  const coordinates = points.map(coordinatesOf).filter((point): point is Coordinates => Boolean(point));
-  if (!coordinates.length) return "https://www.google.com/maps";
-  if (coordinates.length === 1) return `https://www.google.com/maps/search/?api=1&query=${coordinates[0].lat},${coordinates[0].lng}`;
-  const print = (point: Coordinates) => `${point.lat},${point.lng}`;
+  const places = points.map(navigationPlace).filter(Boolean);
+  if (!places.length) return "https://www.google.com/maps";
+  if (places.length === 1) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(places[0])}`;
   const params = new URLSearchParams({
     api: "1",
-    origin: print(coordinates[0]),
-    destination: print(coordinates[coordinates.length - 1]),
+    origin: places[0],
+    destination: places[places.length - 1],
     travelmode: "driving",
   });
-  if (coordinates.length > 2) params.set("waypoints", coordinates.slice(1, -1).map(print).join("|"));
+  if (places.length > 2) params.set("waypoints", places.slice(1, -1).join("|"));
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 };
 
 const pointMapsUrl = (point: RouterPoint) => {
-  const coordinates = coordinatesOf(point);
-  return coordinates ? `https://www.google.com/maps/search/?api=1&query=${coordinates.lat},${coordinates.lng}` : "https://www.google.com/maps";
+  const place = navigationPlace(point);
+  return place ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}` : "https://www.google.com/maps";
 };
 
 function PlannerMap({
