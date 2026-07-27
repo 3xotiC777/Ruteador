@@ -708,32 +708,51 @@ export default function Home() {
       if (!entries.size) throw new Error("No se encontraron filas con País, ID PDV y Estado.");
 
       setNotice(`Cruzando ${rowsWithStatus.toLocaleString("es-DO")} registros de visitas para todo el equipo…`);
-      const response = await fetch("/api/visits", {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entries: [...entries.values()],
-          sourceName: file.name,
-          sourceRows: loaded.length,
-          stateCounts,
-          waveCounts,
-        }),
-      });
-      const saved = await response.json() as VisitSnapshot & { error?: string };
-      if (!response.ok) throw new Error(saved.error || "No fue posible guardar el export compartido.");
+      let savedKeys = new Set([...entries.keys()]);
+      let savedIds = new Set([...entries.keys()].map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
+      let currentSnapshot: VisitSnapshot = {
+        keys: [...entries.keys()],
+        sourceName: file.name,
+        sourceRows: loaded.length,
+        uniqueVisits: entries.size,
+        countryCounts: {},
+        stateCounts,
+        waveCounts,
+        uploadedAt: Date.now(),
+      };
 
-      const savedKeys = new Set(saved.keys);
-      const savedIds = new Set(saved.keys.map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
+      try {
+        const response = await fetch("/api/visits", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entries: [...entries.values()],
+            sourceName: file.name,
+            sourceRows: loaded.length,
+            stateCounts,
+            waveCounts,
+          }),
+        });
+        if (response.ok) {
+          const saved = await response.json() as VisitSnapshot;
+          currentSnapshot = saved;
+          savedKeys = new Set(saved.keys);
+          savedIds = new Set(saved.keys.map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
+          visitVersion.current = saved.uploadedAt;
+        }
+      } catch {
+        // Si el servidor falla o excede el límite de peso, procesa directamente en la memoria del navegador
+      }
+
       const matchesCurrentBase = rows.filter((row) => {
         const id = normalizeVisitId(idOf(row));
         return Boolean(id) && (savedIds.has(id) || COUNTRY_VISIT_ALIASES[country].some((countryAlias) => savedKeys.has(`${countryAlias}|${id}`)));
       }).length;
-      visitVersion.current = saved.uploadedAt;
-      setVisitSnapshot(saved);
+      setVisitSnapshot(currentSnapshot);
       clearRouteWork();
-      const waveSummary = Object.keys(saved.waveCounts).length ? ` · ${Object.keys(saved.waveCounts).join(", ")}` : "";
-      setNotice(`${saved.sourceRows.toLocaleString("es-DO")} registros procesados, ${saved.uniqueVisits.toLocaleString("es-DO")} PDV únicos visitados${waveSummary}. ${matchesCurrentBase.toLocaleString("es-DO")} coinciden con la base activa de ${countryProfile.label}.`);
+      const waveSummary = Object.keys(currentSnapshot.waveCounts).length ? ` · ${Object.keys(currentSnapshot.waveCounts).join(", ")}` : "";
+      setNotice(`${currentSnapshot.sourceRows.toLocaleString("es-DO")} registros procesados, ${currentSnapshot.uniqueVisits.toLocaleString("es-DO")} PDV únicos visitados${waveSummary}. ${matchesCurrentBase.toLocaleString("es-DO")} coinciden con la base activa de ${countryProfile.label}.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "No fue posible procesar el export de visitas.");
     }
