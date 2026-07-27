@@ -1,5 +1,3 @@
-import { env } from "cloudflare:workers";
-
 export type UserRole = "Administrador" | "Campo";
 export type SessionUser = { username: string; role: UserRole; exp: number };
 
@@ -15,9 +13,17 @@ type AuthEnvironment = {
   SESSION_SECRET?: string;
 };
 
-const authEnvironment = () => env as unknown as AuthEnvironment;
-const toBase64Url = (bytes: Uint8Array) => {
-  let binary = "";
+const getEnv = (): AuthEnvironment => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const cf = require("cloudflare:workers");
+    return (cf?.env ?? process.env) as AuthEnvironment;
+  } catch {
+    return (process.env as unknown as AuthEnvironment) ?? {};
+  }
+};
+
+const authEnvironment = () => getEnv();
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 };
