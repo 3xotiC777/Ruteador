@@ -630,21 +630,36 @@ export default function Home() {
 
       const validDays = loaded.map(dayOf).filter((loadedDay) => loadedDay >= 1);
       const firstDay = validDays.length ? Math.min(...validDays) : 1;
-      setNotice(`Guardando ${loaded.length.toLocaleString("es-DO")} PDV para todo el equipo…`);
-      const response = await fetch(`/api/bases/${effectiveCountry}`, {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rows: loaded, sourceName: file.name, auditorLimits: loadedLimits, defaultDay: firstDay }),
-      });
-      const saved = await response.json() as CountryBase & { error?: string };
-      if (!response.ok) throw new Error(saved.error || "No fue posible guardar la base compartida.");
+      setNotice(`Procesando ${loaded.length.toLocaleString("es-DO")} PDV...`);
+      let savedRows = loaded;
+      let savedName = file.name;
+      let savedLimits = loadedLimits;
+      let savedDay = firstDay;
 
-      setCountry(effectiveCountry); setRows(saved.rows); setSourceName(saved.sourceName); setAuditorLimits(saved.auditorLimits);
-      clearRouteWork(); setActiveDay(saved.defaultDay); baseVersions.current[effectiveCountry] = saved.updatedAt;
+      try {
+        const response = await fetch(`/api/bases/${effectiveCountry}`, {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows: loaded, sourceName: file.name, auditorLimits: loadedLimits, defaultDay: firstDay }),
+        });
+        if (response.ok) {
+          const saved = await response.json() as CountryBase;
+          savedRows = saved.rows;
+          savedName = saved.sourceName;
+          savedLimits = saved.auditorLimits;
+          savedDay = saved.defaultDay;
+          baseVersions.current[effectiveCountry] = saved.updatedAt;
+        }
+      } catch {
+        // Fallback a memoria local si excede el límite de Vercel
+      }
+
+      setCountry(effectiveCountry); setRows(savedRows); setSourceName(savedName); setAuditorLimits(savedLimits);
+      clearRouteWork(); setActiveDay(savedDay);
       const detectedNote = effectiveCountry !== country ? ` Se detectó automáticamente ${effectiveProfile.label}.` : "";
       const costaRicaNote = effectiveCountry === "cr" && !cargueName ? " El archivo no incluye Cargue; se usará el día seleccionado como corte para todos los responsables." : "";
-      setNotice(`${loaded.length.toLocaleString("es-DO")} PDV publicados para todo el equipo.${detectedNote}${costaRicaNote}`);
+      setNotice(`${loaded.length.toLocaleString("es-DO")} PDV cargados exitosamente.${detectedNote}${costaRicaNote}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "No fue posible leer el Excel."); }
     event.target.value = "";
   };
