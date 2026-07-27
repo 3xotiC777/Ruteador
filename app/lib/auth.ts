@@ -24,15 +24,20 @@ const getEnv = (): AuthEnvironment => {
 };
 
 const authEnvironment = () => getEnv();
+
+const toBase64Url = (bytes: Uint8Array) => {
+  let binary = "";
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 };
+
 const fromBase64Url = (value: string) => {
   const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
   const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
   const binary = atob(padded);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 };
+
 const constantTimeEqual = (left: string, right: string) => {
   const leftBytes = textEncoder.encode(left);
   const rightBytes = textEncoder.encode(right);
@@ -41,11 +46,13 @@ const constantTimeEqual = (left: string, right: string) => {
   for (let index = 0; index < length; index += 1) difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
   return difference === 0;
 };
+
 const signingKey = async () => {
   const secret = authEnvironment().SESSION_SECRET;
   if (!secret) throw new Error("SESSION_SECRET no está configurado.");
   return crypto.subtle.importKey("raw", textEncoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 };
+
 const sign = async (payload: string) => {
   const signature = await crypto.subtle.sign("HMAC", await signingKey(), textEncoder.encode(payload));
   return toBase64Url(new Uint8Array(signature));
@@ -93,6 +100,7 @@ export const sessionCookie = (token: string, request: Request) => {
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
   return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_SECONDS}${secure}`;
 };
+
 export const clearSessionCookie = (request: Request) => {
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
