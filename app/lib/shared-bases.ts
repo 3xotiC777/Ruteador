@@ -1,5 +1,3 @@
-import { env } from "cloudflare:workers";
-
 export const COUNTRY_IDS = ["rd", "gt-embocen", "gt-abvo", "cr"] as const;
 export type CountryId = typeof COUNTRY_IDS[number];
 export type SharedRow = Record<string, string | number | null | undefined>;
@@ -24,8 +22,18 @@ type StorageEnvironment = {
   UPLOADS?: R2BucketLike;
 };
 
+const getEnv = (): StorageEnvironment => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const cf = require("cloudflare:workers");
+    return (cf?.env ?? process.env) as StorageEnvironment;
+  } catch {
+    return (process.env as unknown as StorageEnvironment) ?? {};
+  }
+};
+
 const storage = () => {
-  const bucket = (env as unknown as StorageEnvironment).UPLOADS;
+  const bucket = getEnv().UPLOADS;
   if (!bucket) throw new Error("El almacenamiento compartido no está configurado.");
   return bucket;
 };
