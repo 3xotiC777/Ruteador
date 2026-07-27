@@ -581,24 +581,25 @@ export default function Home() {
           }
           return;
         }
-        if (response.status === 404) {
-          if (active) setDashboardBaseRows([]);
-          return;
+        if (response.ok) {
+          const text = await response.text();
+          if (text) {
+            const body = JSON.parse(text) as CountryBase;
+            if (active && Array.isArray(body.rows)) {
+              setDashboardBaseRows(body.rows);
+              return;
+            }
+          }
         }
-        const body = await response.json() as CountryBase & { error?: string };
-        if (!response.ok) throw new Error(body.error || "No fue posible consultar la base del dashboard.");
-        if (active) setDashboardBaseRows(body.rows);
-      } catch (error) {
-        if (active) {
-          setDashboardBaseRows([]);
-          setNotice(error instanceof Error ? error.message : "No fue posible consultar la base del dashboard.");
-        }
+        if (active && dashboardCountry === country) setDashboardBaseRows(rows);
+      } catch {
+        if (active && dashboardCountry === country) setDashboardBaseRows(rows);
       } finally {
         if (active) setDashboardLoading(false);
       }
     })();
     return () => { active = false; };
-  }, [dashboardCountry, role, tab]);
+  }, [dashboardCountry, role, tab, rows, country]);
 
   const loadWorkbook = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
