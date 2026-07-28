@@ -26,10 +26,13 @@ const normalizeHeader = (entry: unknown) => String(entry ?? "")
   .replace(/[\u0300-\u036f]/g, "")
   .replace(/[^a-zA-Z0-9]/g, "")
   .toUpperCase();
-const idAliases = ["ID cliente/PDV", "Codigo DN", "CODIGO D&N", "Código DN", "Codigo", "CÓDIGO", "RefID"];
+const idAliases = ["Código DN", "Codigo DN", "ID cliente/PDV", "CODIGO D&N", "RefID", "Codigo", "CÓDIGO"];
 const idFromRow = (row: Record<string, unknown>) => {
-  const header = Object.keys(row).find((candidate) => idAliases.some((alias) => normalizeHeader(candidate) === normalizeHeader(alias)));
-  return header ? String(row[header] ?? "").trim().replace(/\.0+$/, "").toUpperCase() : "";
+  for (const alias of idAliases) {
+    const header = Object.keys(row).find((candidate) => normalizeHeader(candidate) === normalizeHeader(alias));
+    if (header) return String(row[header] ?? "").trim().replace(/\.0+$/, "").toUpperCase();
+  }
+  return "";
 };
 
 export async function GET(request: Request) {
