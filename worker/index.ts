@@ -12,8 +12,14 @@ interface Env {
   UPLOADS: R2Bucket;
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
-  FIELD_USERNAME: string;
-  FIELD_PASSWORD: string;
+  FIELD_RD_USERNAME: string;
+  FIELD_RD_PASSWORD: string;
+  FIELD_GT_EMBOCEN_USERNAME: string;
+  FIELD_GT_EMBOCEN_PASSWORD: string;
+  FIELD_GT_ABVO_USERNAME: string;
+  FIELD_GT_ABVO_PASSWORD: string;
+  FIELD_CR_USERNAME: string;
+  FIELD_CR_PASSWORD: string;
   SESSION_SECRET: string;
   IMAGES: {
     input(stream: ReadableStream): {

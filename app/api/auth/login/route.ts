@@ -16,7 +16,7 @@ export async function POST(request: Request) {
 
     const token = await createSessionToken(user);
     return json(
-      { username: user.username, role: user.role },
+      { username: user.username, role: user.role, country: user.country },
       200,
       { "Set-Cookie": sessionCookie(token, request) },
     );

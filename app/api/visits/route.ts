@@ -1,4 +1,5 @@
 import { readSession } from "../../lib/auth";
+import { getSharedBase } from "../../lib/shared-bases";
 import {
   getVisitSnapshot,
   putVisitSnapshot,
@@ -20,12 +21,35 @@ const cleanCounts = (entry: unknown) => {
     return cleanKey && cleanCount ? [[cleanKey, cleanCount]] : [];
   }));
 };
+const normalizeHeader = (entry: unknown) => String(entry ?? "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/[^a-zA-Z0-9]/g, "")
+  .toUpperCase();
+const idAliases = ["ID cliente/PDV", "Codigo DN", "CODIGO D&N", "Código DN", "Codigo", "CÓDIGO", "RefID"];
+const idFromRow = (row: Record<string, unknown>) => {
+  const header = Object.keys(row).find((candidate) => idAliases.some((alias) => normalizeHeader(candidate) === normalizeHeader(alias)));
+  return header ? String(row[header] ?? "").trim().replace(/\.0+$/, "").toUpperCase() : "";
+};
 
 export async function GET(request: Request) {
   const user = await readSession(request);
   if (!user) return Response.json({ error: "Sesión no válida." }, { status: 401, headers: noStore });
   const snapshot = await getVisitSnapshot();
   if (!snapshot) return Response.json({ error: "Todavía no hay un export de visitas cargado." }, { status: 404, headers: noStore });
+  if (user.role === "Campo" && user.country) {
+    const base = await getSharedBase(user.country);
+    const allowedIds = new Set((base?.rows ?? []).map((row) => idFromRow(row)).filter(Boolean));
+    const keys = snapshot.keys.filter((key) => allowedIds.has(key.slice(key.lastIndexOf("|") + 1)));
+    return Response.json({
+      ...snapshot,
+      keys,
+      uniqueVisits: keys.length,
+      countryCounts: {},
+      stateCounts: {},
+      waveCounts: {},
+    }, { headers: noStore });
+  }
   return Response.json(snapshot, { headers: noStore });
 }
 
