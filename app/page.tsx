@@ -229,9 +229,16 @@ const value = (row: Row, names: string[]) => {
   const key = Object.keys(row).find((header) => names.some((name) => normalize(header) === normalize(name)));
   return key ? String(row[key] ?? "").trim() : "";
 };
+const preferredValue = (row: Row, names: string[]) => {
+  for (const name of names) {
+    const key = Object.keys(row).find((header) => normalize(header) === normalize(name));
+    if (key) return String(row[key] ?? "").trim();
+  }
+  return "";
+};
 const hasField = (row: Row, names: string[]) => Object.keys(row).some((header) => names.some((name) => normalize(header) === normalize(name)));
 const dayOf = (row: Row) => Number(value(row, ["DIA", "Dia_Asignado"]).match(/\d+/)?.[0]) || 0;
-const idOf = (row: Row) => value(row, ["ID cliente/PDV", "Codigo DN", "CODIGO D&N", "Código DN", "Codigo", "CÓDIGO", "RefID"]);
+const idOf = (row: Row) => preferredValue(row, ["Código DN", "Codigo DN", "ID cliente/PDV", "CODIGO D&N", "RefID", "Codigo", "CÓDIGO"]);
 const auditorOf = (row: Row) => {
   if (hasField(row, ["Tabla11.auditor"])) return value(row, ["Tabla11.auditor"]);
   if (hasField(row, ["Responsable"])) return value(row, ["Responsable"]);
