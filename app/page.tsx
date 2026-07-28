@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { upload } from "@vercel/blob/client";
 import * as XLSX from "xlsx";
 import { ROUTER_STORAGE_PREFIX, RouterPlan } from "./router-plan";
 
@@ -173,6 +174,12 @@ const visitKey = (country: unknown, id: unknown) => {
   const normalizedId = normalizeVisitId(id);
   return normalizedCountry && normalizedId ? `${normalizedCountry}|${normalizedId}` : "";
 };
+const uploadJsonObject = async (pathname: string, payload: unknown) => upload(pathname, JSON.stringify(payload), {
+  access: "private",
+  handleUploadUrl: "/api/blob-upload",
+  contentType: "application/json",
+  multipart: false,
+});
 const localIsoDate = (date = new Date()) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -746,32 +753,32 @@ export default function Home() {
       const validDays = loaded.map(dayOf).filter((loadedDay) => loadedDay >= 1);
       const firstDay = validDays.length ? Math.min(...validDays) : 1;
       setNotice(`Procesando ${loaded.length.toLocaleString("es-DO")} PDV...`);
-      let savedRows = loaded;
-      let savedName = file.name;
-      let savedLimits = loadedLimits;
-      let savedDay = firstDay;
+      const basePayload: CountryBase = {
+        rows: loaded,
+        sourceName: file.name,
+        auditorLimits: loadedLimits,
+        defaultDay: firstDay,
+        updatedAt: Date.now(),
+      };
+      let savedBase = basePayload;
 
       try {
+        await uploadJsonObject(`active-bases/${effectiveCountry}.json`, basePayload);
+      } catch {
         const response = await fetch(`/api/bases/${effectiveCountry}`, {
           method: "PUT",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rows: loaded, sourceName: file.name, auditorLimits: loadedLimits, defaultDay: firstDay }),
+          body: JSON.stringify(basePayload),
         });
-        if (response.ok) {
-          const saved = await response.json() as CountryBase;
-          savedRows = saved.rows;
-          savedName = saved.sourceName;
-          savedLimits = saved.auditorLimits;
-          savedDay = saved.defaultDay;
-          baseVersions.current[effectiveCountry] = saved.updatedAt;
-        }
-      } catch {
-        // Fallback a memoria local si excede el límite de Vercel
+        const body = await response.json() as CountryBase & { error?: string };
+        if (!response.ok) throw new Error(body.error || "No fue posible guardar la base compartida.");
+        savedBase = body;
       }
+      baseVersions.current[effectiveCountry] = savedBase.updatedAt;
 
-      setCountry(effectiveCountry); setRows(savedRows); setSourceName(savedName); setAuditorLimits(savedLimits);
-      clearRouteWork(); setActiveDay(savedDay);
+      setCountry(effectiveCountry); setRows(savedBase.rows); setSourceName(savedBase.sourceName); setAuditorLimits(savedBase.auditorLimits);
+      clearRouteWork(); setActiveDay(savedBase.defaultDay);
       const detectedNote = effectiveCountry !== country ? ` Se detectó automáticamente ${effectiveProfile.label}.` : "";
       const costaRicaNote = effectiveCountry === "cr" && !cargueName ? " El archivo no incluye Cargue; se usará el día seleccionado como corte para todos los responsables." : "";
       setNotice(`${loaded.length.toLocaleString("es-DO")} PDV cargados exitosamente.${detectedNote}${costaRicaNote}`);
@@ -825,18 +832,25 @@ export default function Home() {
       setNotice(`Cruzando ${rowsWithStatus.toLocaleString("es-DO")} registros de visitas para todo el equipo…`);
       let savedKeys = new Set([...entries.keys()]);
       let savedIds = new Set([...entries.keys()].map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
+      const countryCounts: Record<string, number> = {};
+      for (const key of entries.keys()) {
+        const visitCountry = key.slice(0, key.lastIndexOf("|"));
+        countryCounts[visitCountry] = (countryCounts[visitCountry] ?? 0) + 1;
+      }
       let currentSnapshot: VisitSnapshot = {
         keys: [...entries.keys()],
         sourceName: file.name,
         sourceRows: loaded.length,
         uniqueVisits: entries.size,
-        countryCounts: {},
+        countryCounts,
         stateCounts,
         waveCounts,
         uploadedAt: Date.now(),
       };
 
       try {
+        await uploadJsonObject("active-visits/informes.json", currentSnapshot);
+      } catch {
         const response = await fetch("/api/visits", {
           method: "PUT",
           credentials: "same-origin",
@@ -849,16 +863,13 @@ export default function Home() {
             waveCounts,
           }),
         });
-        if (response.ok) {
-          const saved = await response.json() as VisitSnapshot;
-          currentSnapshot = saved;
-          savedKeys = new Set(saved.keys);
-          savedIds = new Set(saved.keys.map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
-          visitVersion.current = saved.uploadedAt;
-        }
-      } catch {
-        // Si el servidor falla o excede el límite de peso, procesa directamente en la memoria del navegador
+        const body = await response.json() as VisitSnapshot & { error?: string };
+        if (!response.ok) throw new Error(body.error || "No fue posible guardar el export compartido.");
+        currentSnapshot = body;
+        savedKeys = new Set(body.keys);
+        savedIds = new Set(body.keys.map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean));
       }
+      visitVersion.current = currentSnapshot.uploadedAt;
 
       const matchesCurrentBase = rows.filter((row) => {
         const id = normalizeVisitId(idOf(row));
@@ -906,14 +917,25 @@ export default function Home() {
       });
       if (!entries.length) throw new Error("No se encontraron filas válidas para las operaciones del ruteador.");
 
-      const response = await fetch("/api/forecast", {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries, sourceName: file.name }),
-      });
-      const body = await response.json() as ForecastSnapshot & { error?: string };
-      if (!response.ok) throw new Error(body.error || "No fue posible guardar el forecast mensual.");
+      const forecastPayload: ForecastSnapshot = {
+        entries: entries.sort((left, right) => left.date.localeCompare(right.date) || left.country.localeCompare(right.country)),
+        sourceName: file.name,
+        uploadedAt: Date.now(),
+      };
+      let body = forecastPayload;
+      try {
+        await uploadJsonObject("active-forecast/current.json", forecastPayload);
+      } catch {
+        const response = await fetch("/api/forecast", {
+          method: "PUT",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entries, sourceName: file.name }),
+        });
+        const saved = await response.json() as ForecastSnapshot & { error?: string };
+        if (!response.ok) throw new Error(saved.error || "No fue posible guardar el forecast mensual.");
+        body = saved;
+      }
       setForecastSnapshot(body);
       const active = resolveForecastEntry(body, country);
       if (active) setActiveDay(active.day);
