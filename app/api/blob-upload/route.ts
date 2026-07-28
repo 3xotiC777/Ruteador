@@ -1,4 +1,5 @@
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { issueSignedToken } from "@vercel/blob";
+import { handleUploadPresigned, type HandleUploadPresignedBody } from "@vercel/blob/client";
 import { readSession } from "../../lib/auth";
 
 const noStore = { "Cache-Control": "no-store" };
@@ -17,9 +18,9 @@ const sameOrigin = (request: Request) => {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as HandleUploadBody;
+    const body = await request.json() as HandleUploadPresignedBody;
 
-    if (body.type === "blob.generate-client-token") {
+    if (body.type === "blob.generate-presigned-url") {
       const user = await readSession(request);
       if (!user) return Response.json({ error: "Sesión no válida." }, { status: 401, headers: noStore });
       if (user.role !== "Administrador") {
@@ -28,20 +29,30 @@ export async function POST(request: Request) {
       if (!sameOrigin(request)) return Response.json({ error: "Origen no permitido." }, { status: 403, headers: noStore });
     }
 
-    const result = await handleUpload({
+    const result = await handleUploadPresigned({
       request,
       body,
-      onBeforeGenerateToken: async (pathname) => {
+      getSignedToken: async (pathname) => {
         if (!allowedPathnames.has(pathname)) throw new Error("Ruta de almacenamiento no permitida.");
+        const validUntil = Date.now() + 15 * 60 * 1000;
         return {
-          allowedContentTypes: ["application/json"],
-          maximumSizeInBytes: 50 * 1024 * 1024,
-          addRandomSuffix: false,
-          allowOverwrite: true,
-          cacheControlMaxAge: 60,
+          token: await issueSignedToken({
+            pathname,
+            operations: ["put"],
+            allowedContentTypes: ["application/json"],
+            maximumSizeInBytes: 50 * 1024 * 1024,
+            validUntil,
+          }),
+          urlOptions: {
+            allowedContentTypes: ["application/json"],
+            maximumSizeInBytes: 50 * 1024 * 1024,
+            validUntil,
+            addRandomSuffix: false,
+            allowOverwrite: true,
+            cacheControlMaxAge: 60,
+          },
         };
       },
-      onUploadCompleted: async () => {},
     });
     return Response.json(result, { headers: noStore });
   } catch {

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { upload } from "@vercel/blob/client";
+import { uploadPresigned } from "@vercel/blob/client";
 import * as XLSX from "xlsx";
 import { ROUTER_STORAGE_PREFIX, RouterPlan } from "./router-plan";
 
@@ -174,7 +174,7 @@ const visitKey = (country: unknown, id: unknown) => {
   const normalizedId = normalizeVisitId(id);
   return normalizedCountry && normalizedId ? `${normalizedCountry}|${normalizedId}` : "";
 };
-const uploadJsonObject = async (pathname: string, payload: unknown) => upload(pathname, JSON.stringify(payload), {
+const uploadJsonObject = async (pathname: string, payload: unknown) => uploadPresigned(pathname, JSON.stringify(payload), {
   access: "private",
   handleUploadUrl: "/api/blob-upload",
   contentType: "application/json",
