@@ -1,5 +1,7 @@
+import { COUNTRY_IDS, CountryId, isCountryId } from "./shared-bases";
+
 export type UserRole = "Administrador" | "Campo";
-export type SessionUser = { username: string; role: UserRole; exp: number };
+export type SessionUser = { username: string; role: UserRole; country: CountryId | null; exp: number };
 
 const SESSION_COOKIE = "dn_route_session";
 const SESSION_SECONDS = 60 * 60 * 12;
@@ -8,8 +10,14 @@ const textEncoder = new TextEncoder();
 type AuthEnvironment = {
   ADMIN_USERNAME?: string;
   ADMIN_PASSWORD?: string;
-  FIELD_USERNAME?: string;
-  FIELD_PASSWORD?: string;
+  FIELD_RD_USERNAME?: string;
+  FIELD_RD_PASSWORD?: string;
+  FIELD_GT_EMBOCEN_USERNAME?: string;
+  FIELD_GT_EMBOCEN_PASSWORD?: string;
+  FIELD_GT_ABVO_USERNAME?: string;
+  FIELD_GT_ABVO_PASSWORD?: string;
+  FIELD_CR_USERNAME?: string;
+  FIELD_CR_PASSWORD?: string;
   SESSION_SECRET?: string;
 };
 
@@ -65,13 +73,20 @@ export function authenticate(username: string, password: string): Omit<SessionUs
     config.ADMIN_PASSWORD &&
     constantTimeEqual(username, config.ADMIN_USERNAME) &&
     constantTimeEqual(password, config.ADMIN_PASSWORD)
-  ) return { username: config.ADMIN_USERNAME, role: "Administrador" };
-  if (
-    config.FIELD_USERNAME &&
-    config.FIELD_PASSWORD &&
-    constantTimeEqual(username, config.FIELD_USERNAME) &&
-    constantTimeEqual(password, config.FIELD_PASSWORD)
-  ) return { username: config.FIELD_USERNAME, role: "Campo" };
+  ) return { username: config.ADMIN_USERNAME, role: "Administrador", country: null };
+
+  const fieldUsers: Array<{ country: CountryId; username?: string; password?: string }> = [
+    { country: "rd", username: config.FIELD_RD_USERNAME, password: config.FIELD_RD_PASSWORD },
+    { country: "gt-embocen", username: config.FIELD_GT_EMBOCEN_USERNAME, password: config.FIELD_GT_EMBOCEN_PASSWORD },
+    { country: "gt-abvo", username: config.FIELD_GT_ABVO_USERNAME, password: config.FIELD_GT_ABVO_PASSWORD },
+    { country: "cr", username: config.FIELD_CR_USERNAME, password: config.FIELD_CR_PASSWORD },
+  ];
+  const matchingUser = fieldUsers.find((candidate) =>
+    candidate.username &&
+    candidate.password &&
+    constantTimeEqual(username, candidate.username) &&
+    constantTimeEqual(password, candidate.password));
+  if (matchingUser) return { username: matchingUser.username!, role: "Campo", country: matchingUser.country };
   return null;
 }
 
@@ -89,7 +104,11 @@ export async function readSession(request: Request): Promise<SessionUser | null>
   if (!payload || !signature || !constantTimeEqual(signature, await sign(payload))) return null;
   try {
     const session = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as SessionUser;
-    if (!session.username || !["Administrador", "Campo"].includes(session.role) || session.exp <= Math.floor(Date.now() / 1000)) return null;
+    const validCountry = session.country === null || (typeof session.country === "string" && isCountryId(session.country));
+    const validScope = session.role === "Administrador"
+      ? session.country === null
+      : session.role === "Campo" && validCountry && session.country !== null && (COUNTRY_IDS as readonly string[]).includes(session.country);
+    if (!session.username || !validScope || session.exp <= Math.floor(Date.now() / 1000)) return null;
     return session;
   } catch {
     return null;

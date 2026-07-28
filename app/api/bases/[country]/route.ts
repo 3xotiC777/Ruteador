@@ -15,6 +15,9 @@ export async function GET(request: Request, context: RouteContext) {
 
   const { country } = await context.params;
   if (!isCountryId(country)) return Response.json({ error: "País no válido." }, { status: 404, headers: noStore });
+  if (user.role === "Campo" && user.country !== country) {
+    return Response.json({ error: "Este usuario no tiene acceso a la operación solicitada." }, { status: 403, headers: noStore });
+  }
 
   const base = await getSharedBase(country);
   if (!base) return Response.json({ error: "Todavía no hay una base cargada para este país." }, { status: 404, headers: noStore });

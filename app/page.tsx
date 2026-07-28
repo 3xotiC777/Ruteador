@@ -9,7 +9,7 @@ type ExportFile = { name: string; rows: Row[] };
 type CountryId = "rd" | "gt-embocen" | "gt-abvo" | "cr";
 type AuditorLimits = Record<string, number>;
 type UserRole = "Administrador" | "Campo";
-type SessionIdentity = { username: string; role: UserRole };
+type SessionIdentity = { username: string; role: UserRole; country: CountryId | null };
 type CountryBase = { rows: Row[]; sourceName: string; auditorLimits: AuditorLimits; defaultDay: number; updatedAt: number };
 type VisitUploadEntry = { country: string; id: string };
 type VisitSnapshot = {
@@ -21,6 +21,12 @@ type VisitSnapshot = {
   stateCounts: Record<string, number>;
   waveCounts: Record<string, number>;
   uploadedAt: number;
+};
+type ForecastEntry = { date: string; country: CountryId; study: string; forecast: number | null; day: number };
+type ForecastSnapshot = { entries: ForecastEntry[]; sourceName: string; uploadedAt: number };
+type ForecastStatus = {
+  kind: "active" | "upcoming" | "closed" | "missing";
+  entry: ForecastEntry | null;
 };
 type CountryProfile = {
   label: string;
@@ -139,6 +145,12 @@ const COUNTRY_VISIT_ALIASES: Record<CountryId, string[]> = {
   "gt-abvo": ["GUATEMALA ABVO", "ABVO GUATEMALA", "GUATEMALA"],
   cr: ["COSTA RICA"],
 };
+const FORECAST_COUNTRY_ALIASES: Record<CountryId, string[]> = {
+  rd: ["REPUBLICA DOMINICANA"],
+  "gt-embocen": ["GUATEMALA EMBO", "GUATEMALA EMBOCEN", "EMBOCEN GUATEMALA"],
+  "gt-abvo": ["GUATEMALA ABVO", "ABVO GUATEMALA"],
+  cr: ["COSTA RICA"],
+};
 
 const demoRows: Row[] = [
   { "ID cliente/PDV": "159155", "NAME Cliente (PDV)": "Comercial Raúl 2", DIRECCIÓN: "Centro de Haina", "TIPO CLIENTE ICE (D&N)": "HOME MARKET TRADICIONAL", "CLIENTE FIJO 30%": "NO", SELECCION: "T", TIPO: "T", DIA: 5, "Tabla11.auditor": "ARILEYSIS", "MUESTRA CUMPL.": "Cargar", "export.Estado": "Aprobada", LATITUD: 18.42038155, LONGITUD: -70.0312729 },
@@ -161,6 +173,51 @@ const visitKey = (country: unknown, id: unknown) => {
   const normalizedId = normalizeVisitId(id);
   return normalizedCountry && normalizedId ? `${normalizedCountry}|${normalizedId}` : "";
 };
+const localIsoDate = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+const forecastDate = (entry: unknown) => {
+  if (entry instanceof Date && Number.isFinite(entry.getTime())) return localIsoDate(entry);
+  if (typeof entry === "number") {
+    const parsed = XLSX.SSF.parse_date_code(entry);
+    return parsed ? `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}` : "";
+  }
+  const text = String(entry ?? "").trim();
+  const iso = text.match(/^(\d{4})[-/]([01]?\d)[-/]([0-3]?\d)$/);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  const latin = text.match(/^([0-3]?\d)[-/]([01]?\d)[-/](\d{4})$/);
+  return latin ? `${latin[3]}-${latin[2].padStart(2, "0")}-${latin[1].padStart(2, "0")}` : "";
+};
+const forecastCountry = (entry: unknown): CountryId | null => {
+  const normalized = normalizeVisitCountry(entry);
+  return COUNTRY_IDS.find((countryId) => FORECAST_COUNTRY_ALIASES[countryId].includes(normalized)) ?? null;
+};
+const resolveForecastEntry = (snapshot: ForecastSnapshot | null, country: CountryId, date = localIsoDate()) => {
+  const month = date.slice(0, 7);
+  const entries = (snapshot?.entries ?? []).filter((entry) => entry.country === country && entry.date.startsWith(month)).sort((left, right) => left.date.localeCompare(right.date));
+  if (!entries.length) return null;
+  const exact = entries.find((entry) => entry.date === date);
+  if (exact) return exact;
+  if (date < entries[0].date || date > entries[entries.length - 1].date) return null;
+  return [...entries].reverse().find((entry) => entry.date <= date) ?? null;
+};
+const forecastStatusFor = (snapshot: ForecastSnapshot | null, country: CountryId, date = localIsoDate()): ForecastStatus => {
+  const month = date.slice(0, 7);
+  const entries = (snapshot?.entries ?? [])
+    .filter((entry) => entry.country === country && entry.date.startsWith(month))
+    .sort((left, right) => left.date.localeCompare(right.date));
+  if (!entries.length) return { kind: "missing", entry: null };
+  if (date < entries[0].date) return { kind: "upcoming", entry: entries[0] };
+  if (date > entries[entries.length - 1].date) return { kind: "closed", entry: entries[entries.length - 1] };
+  return { kind: "active", entry: resolveForecastEntry(snapshot, country, date) };
+};
+const humanForecastDate = (date: string) => new Date(`${date}T12:00:00`).toLocaleDateString("es-DO", {
+  day: "numeric",
+  month: "long",
+});
 const value = (row: Row, names: string[]) => {
   const key = Object.keys(row).find((header) => names.some((name) => normalize(header) === normalize(name)));
   return key ? String(row[key] ?? "").trim() : "";
@@ -363,6 +420,7 @@ export default function Home() {
   const [tab, setTab] = useState<"inicio" | "rutas" | "dashboard" | "base">("inicio");
   const [role, setRole] = useState<UserRole | null>(null);
   const [username, setUsername] = useState("");
+  const [allowedCountry, setAllowedCountry] = useState<CountryId | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [country, setCountry] = useState<CountryId>("rd");
   const [dashboardCountry, setDashboardCountry] = useState<CountryId>("rd");
@@ -379,11 +437,33 @@ export default function Home() {
   const [showSpecial, setShowSpecial] = useState(false);
   const [detailAuditor, setDetailAuditor] = useState("");
   const [visitSnapshot, setVisitSnapshot] = useState<VisitSnapshot | null>(null);
+  const [forecastSnapshot, setForecastSnapshot] = useState<ForecastSnapshot | null>(null);
   const baseVersions = useRef<Partial<Record<CountryId, number>>>({});
   const visitVersion = useRef(0);
   const countryProfile = COUNTRY_PROFILES[country];
   const dashboardCountryProfile = COUNTRY_PROFILES[dashboardCountry];
   const hasAuditorLimits = Object.keys(auditorLimits).length > 0;
+  const automaticForecast = useMemo(() => resolveForecastEntry(forecastSnapshot, country), [country, forecastSnapshot]);
+  const visibleForecastCountry = tab === "dashboard" ? dashboardCountry : country;
+  const visibleForecastProfile = COUNTRY_PROFILES[visibleForecastCountry];
+  const visibleForecastStatus = useMemo(
+    () => forecastStatusFor(forecastSnapshot, visibleForecastCountry),
+    [forecastSnapshot, visibleForecastCountry],
+  );
+  const forecastAlignmentMessage = useMemo(() => {
+    const today = localIsoDate();
+    if (visibleForecastStatus.kind === "active" && visibleForecastStatus.entry) {
+      return `Según el forecast, hoy ${humanForecastDate(today)} es el día ${visibleForecastStatus.entry.day} de campo en ${visibleForecastProfile.label}.`;
+    }
+    if (visibleForecastStatus.kind === "upcoming" && visibleForecastStatus.entry) {
+      return `Según el forecast, el campo de ${visibleForecastProfile.label} inicia el ${humanForecastDate(visibleForecastStatus.entry.date)} con el día ${visibleForecastStatus.entry.day}.`;
+    }
+    if (visibleForecastStatus.kind === "closed" && visibleForecastStatus.entry) {
+      return `Según el forecast, el campo de ${visibleForecastProfile.label} ya cerró. La última fecha fue el ${humanForecastDate(visibleForecastStatus.entry.date)} (día ${visibleForecastStatus.entry.day}).`;
+    }
+    const month = new Date(`${today.slice(0, 7)}-01T12:00:00`).toLocaleDateString("es-DO", { month: "long", year: "numeric" });
+    return `No hay forecast vigente para ${month} en ${visibleForecastProfile.label}.`;
+  }, [visibleForecastProfile.label, visibleForecastStatus]);
 
   const visitKeys = useMemo(() => new Set(visitSnapshot?.keys ?? []), [visitSnapshot]);
   const visitIds = useMemo(() => new Set((visitSnapshot?.keys ?? []).map((key) => key.slice(key.lastIndexOf("|") + 1)).filter(Boolean)), [visitSnapshot]);
@@ -450,9 +530,10 @@ export default function Home() {
   }, []);
 
   const commitDayInput = useCallback(() => {
+    if (role !== "Administrador") return;
     const parsedDay = Number.parseInt(dayInput, 10);
     setActiveDay(Number.isFinite(parsedDay) ? parsedDay : day);
-  }, [day, dayInput, setActiveDay]);
+  }, [day, dayInput, role, setActiveDay]);
 
   const clearRouteWork = useCallback(() => {
     setExports([]);
@@ -531,6 +612,34 @@ export default function Home() {
     }
   }, [clearRouteWork]);
 
+  const activateForecastSnapshot = useCallback(async (announce = false) => {
+    try {
+      const response = await fetch("/api/forecast", { cache: "no-store", credentials: "same-origin" });
+      if (response.status === 401) {
+        setRole(null);
+        setUsername("");
+        setAllowedCountry(null);
+        setForecastSnapshot(null);
+        return;
+      }
+      if (response.status === 404) {
+        setForecastSnapshot(null);
+        if (announce) setNotice("Todavía no hay un forecast mensual cargado.");
+        return;
+      }
+      const body = await response.json() as ForecastSnapshot & { error?: string };
+      if (!response.ok) throw new Error(body.error || "No fue posible consultar el forecast mensual.");
+      setForecastSnapshot(body);
+      if (announce) setNotice(`Forecast ${body.sourceName} activado con ${body.entries.length.toLocaleString("es-DO")} fechas.`);
+    } catch (error) {
+      if (announce) setNotice(error instanceof Error ? error.message : "No fue posible consultar el forecast mensual.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (role === "Campo" && automaticForecast) setActiveDay(automaticForecast.day);
+  }, [automaticForecast, role, setActiveDay]);
+
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -541,22 +650,27 @@ export default function Home() {
         if (!active) return;
         setRole(identity.role);
         setUsername(identity.username);
+        setAllowedCountry(identity.country);
+        const initialCountry = identity.role === "Campo" && identity.country ? identity.country : "rd";
+        setDashboardCountry(initialCountry);
         await Promise.all([
-          activateSharedBase("rd", { resetWork: true, force: true }),
+          activateSharedBase(initialCountry, { resetWork: true, force: true }),
           activateVisitSnapshot(),
+          activateForecastSnapshot(),
         ]);
       } finally {
         if (active) setAuthLoading(false);
       }
     })();
     return () => { active = false; };
-  }, [activateSharedBase, activateVisitSnapshot]);
+  }, [activateForecastSnapshot, activateSharedBase, activateVisitSnapshot]);
 
   useEffect(() => {
     if (!role) return;
     const refresh = () => {
       void activateSharedBase(country);
       void activateVisitSnapshot();
+      void activateForecastSnapshot();
     };
     const timer = window.setInterval(refresh, 300_000);
     window.addEventListener("focus", refresh);
@@ -564,7 +678,7 @@ export default function Home() {
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [activateSharedBase, activateVisitSnapshot, country, role]);
+  }, [activateForecastSnapshot, activateSharedBase, activateVisitSnapshot, country, role]);
 
   useEffect(() => {
     if (!role || tab !== "dashboard") return;
@@ -724,7 +838,7 @@ export default function Home() {
 
       try {
         const response = await fetch("/api/visits", {
-          method: "POST",
+          method: "PUT",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -760,7 +874,62 @@ export default function Home() {
     event.target.value = "";
   };
 
+  const loadForecast = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      if (role !== "Administrador") throw new Error("Solo Administrador puede cargar el forecast mensual.");
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+      const sheet = workbook.Sheets[workbook.SheetNames[0] ?? ""];
+      if (!sheet) throw new Error("El forecast no contiene una hoja para procesar.");
+      const loaded = XLSX.utils.sheet_to_json<Row>(sheet, { defval: "" });
+      if (!loaded.length) throw new Error("El forecast no contiene registros.");
+      const firstRow = loaded[0];
+      const required = ["Fecha", "Pais", "dia"].filter((header) => !hasField(firstRow, [header]));
+      if (required.length) throw new Error(`Al forecast le faltan las columnas: ${required.join(", ")}.`);
+
+      const entries = loaded.flatMap((row): ForecastEntry[] => {
+        const dateHeader = Object.keys(row).find((header) => normalize(header) === normalize("Fecha"));
+        const date = forecastDate(dateHeader ? row[dateHeader] : "");
+        const mappedCountry = forecastCountry(value(row, ["Pais", "País"]));
+        const fieldDay = Number(value(row, ["dia", "Día"]));
+        if (!date || !mappedCountry || !Number.isInteger(fieldDay) || fieldDay < 1 || fieldDay > 31) return [];
+        const targetValue = value(row, ["Forecast"]);
+        const target = targetValue === "" ? null : Number(targetValue);
+        return [{
+          date,
+          country: mappedCountry,
+          study: value(row, ["Estudio"]),
+          forecast: target !== null && Number.isFinite(target) ? target : null,
+          day: fieldDay,
+        }];
+      });
+      if (!entries.length) throw new Error("No se encontraron filas válidas para las operaciones del ruteador.");
+
+      const response = await fetch("/api/forecast", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries, sourceName: file.name }),
+      });
+      const body = await response.json() as ForecastSnapshot & { error?: string };
+      if (!response.ok) throw new Error(body.error || "No fue posible guardar el forecast mensual.");
+      setForecastSnapshot(body);
+      const active = resolveForecastEntry(body, country);
+      if (active) setActiveDay(active.day);
+      const coverage = COUNTRY_IDS.filter((countryId) => body.entries.some((entry) => entry.country === countryId)).length;
+      setNotice(`Forecast ${file.name} cargado: ${entries.length.toLocaleString("es-DO")} fechas válidas y ${coverage} operaciones cubiertas.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No fue posible procesar el forecast mensual.");
+    }
+    event.target.value = "";
+  };
+
   const changeCountry = (nextCountry: CountryId) => {
+    if (role === "Campo" && allowedCountry !== nextCountry) {
+      setNotice("Este usuario solo tiene acceso a su país asignado.");
+      return;
+    }
     setCountry(nextCountry);
     setRows([]);
     setSourceName(`Consultando base compartida · ${COUNTRY_PROFILES[nextCountry].label}`);
@@ -774,10 +943,12 @@ export default function Home() {
     } finally {
       setRole(null);
       setUsername("");
+      setAllowedCountry(null);
       setTab("inicio");
       setRows([]);
       setSourceName("Sesión finalizada");
       setVisitSnapshot(null);
+      setForecastSnapshot(null);
       visitVersion.current = 0;
       baseVersions.current = {};
       clearRouteWork();
@@ -789,8 +960,8 @@ export default function Home() {
       setNotice(`Carga primero el Excel de ${countryProfile.label} desde Base de datos.`);
       return;
     }
-    if (!visitSnapshot) {
-      setNotice("No se generaron rutas: primero carga el export diario para excluir los PDV ya visitados.");
+    if (role === "Campo" && !automaticForecast) {
+      setNotice("No hay un día automático disponible para esta operación. Administrador debe cargar el forecast del mes.");
       return;
     }
     const base = rows.filter((row) => {
@@ -846,9 +1017,13 @@ export default function Home() {
   if (!role) return <LoginScreen onAuthenticated={(identity) => {
     setRole(identity.role);
     setUsername(identity.username);
+    setAllowedCountry(identity.country);
     setAuthLoading(false);
-    void activateSharedBase("rd", { resetWork: true, force: true });
+    const initialCountry = identity.role === "Campo" && identity.country ? identity.country : "rd";
+    setDashboardCountry(initialCountry);
+    void activateSharedBase(initialCountry, { resetWork: true, force: true });
     void activateVisitSnapshot();
+    void activateForecastSnapshot();
   }}/>;
 
   return <main>
@@ -873,6 +1048,11 @@ export default function Home() {
       <header className="topbar"><div className="crumb"><span>Ruteador</span><b>/</b><strong>{tab === "inicio" ? "Resumen operativo" : tab[0].toUpperCase() + tab.slice(1)}</strong></div><div className="top-actions"><span className={visitSnapshot ? "sync" : "sync sync-pending"}><b></b>{visitSnapshot ? ` Export · ${new Date(visitSnapshot.uploadedAt).toLocaleDateString("es-DO")}` : " Sin export diario"}</span><div className="signed-user"><span>{username}</span><small>{role}</small></div><button className="logout-button" onClick={logout}>Salir</button></div></header>
       <div className="content">
         {notice && <div className="notice"><span>✓</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
+        <div className={`forecast-alignment ${visibleForecastStatus.kind}`} role="status">
+          <span className="forecast-alignment-icon">{visibleForecastStatus.kind === "active" ? "◷" : visibleForecastStatus.kind === "closed" ? "✓" : visibleForecastStatus.kind === "upcoming" ? "→" : "i"}</span>
+          <div><small>ALINEACIÓN DEL DÍA DE CAMPO</small><strong>{forecastAlignmentMessage}</strong></div>
+          {forecastSnapshot && <em>{forecastSnapshot.sourceName}</em>}
+        </div>
         {tab === "inicio" && <>
           <section className="hero"><div><p className="eyebrow">OPERACIÓN EN VIVO <span></span> DÍA {day}</p><h1>El día de campo,<br/><em>listo para avanzar.</em></h1><p className="hero-copy">Genera las rutas de tus auditores, incorpora solicitudes de última hora y sigue el avance de cada visita desde una sola base.</p><div className="hero-actions"><button className="button primary" onClick={() => setTab("rutas")}>Preparar rutas <span>→</span></button><button className="text-button" onClick={() => setTab("dashboard")}>Ver avance <span>↗</span></button></div></div><div className="route-graphic"><div className="route-line one"></div><div className="route-line two"></div><div className="route-line three"></div><div className="pin pin-a">●</div><div className="pin pin-b">●</div><div className="pin pin-c">●</div><div className="graphic-card"><span>VISITAS HOY</span><strong>{visits.length}<small> / {scheduled.length}</small></strong><b>{completion}% completo</b></div></div></section>
           <section className="metrics"><Metric label="Programados hoy" value={scheduled.length} change={`${auditorProgress.length} auditores activos`} tone="blue" icon="⌖"/><Metric label="Visitas completadas" value={visits.length} change={`${completion}% del plan`} tone="mint" icon="✓"/><Metric label="Pendientes" value={scheduled.length - visits.length} change="Por confirmar" tone="orange" icon="◷"/><Metric label="PDV fijos" value={scheduled.filter((row) => fixedOf(row).toUpperCase() === "SI").length} change="En la ruta de hoy" tone="purple" icon="◆"/></section>
@@ -881,17 +1061,17 @@ export default function Home() {
         {tab === "rutas" && <section className="routes-view">
           <div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS · {countryProfile.shortLabel}</p><h1>Prepara la operación de campo</h1><p>{countryProfile.description}</p></div><div className="date-chip">{countryProfile.cutoffLabel} <strong>{country === "cr" && hasAuditorLimits ? "por auditor" : day}</strong><small>{includeCarryover ? "Con pendientes anteriores" : "Solo el día elegido"}</small></div></div>
           <div className="route-controls panel">
-            <div className="control"><label>País / operación</label><select aria-label="País de operación" value={country} onChange={(event) => changeCountry(event.target.value as CountryId)}>{COUNTRY_IDS.map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select></div>
-            <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={dayInput} onChange={(event) => setDayInput(event.target.value.replace(/\D/g, "").slice(0, 2))} onBlur={commitDayInput} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} aria-label="Escribir día de campo"/><small>Escribe el número y presiona Enter</small></div>
+            <div className="control"><label>País / operación</label><select aria-label="País de operación" value={country} disabled={role === "Campo"} onChange={(event) => changeCountry(event.target.value as CountryId)}>{(role === "Campo" && allowedCountry ? [allowedCountry] : COUNTRY_IDS).map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select>{role === "Campo" && <small>Operación asignada a este usuario</small>}</div>
+            <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={dayInput} disabled={role === "Campo"} onChange={(event) => setDayInput(event.target.value.replace(/\D/g, "").slice(0, 2))} onBlur={commitDayInput} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} aria-label="Escribir día de campo"/><small>{role === "Campo" ? automaticForecast ? `Automático · Forecast ${automaticForecast.date}` : "Sin forecast vigente; Administrador debe cargarlo" : "Escribe el número y presiona Enter"}</small></div>
             <div className="control source"><label>Base activa</label><strong>▣ {sourceName}</strong><small>{rows.length.toLocaleString("es-DO")} PDV · {exportMatches.toLocaleString("es-DO")} visitados en export</small></div>
-            <button className="button primary generate" onClick={createRoutes} disabled={!rows.length}>Cargar rutas <span>→</span></button>
+            <button className="button primary generate" onClick={createRoutes} disabled={!rows.length || (role === "Campo" && !automaticForecast)}>Cargar rutas <span>→</span></button>
             <label className="carryover-toggle"><input type="checkbox" checked={includeCarryover} onChange={(event) => setIncludeCarryover(event.target.checked)}/><span><b>Incluir pendientes de días anteriores</b><small>Actívalo solo cuando quieras el arrastre acumulado de la macro.</small></span></label>
           </div>
           <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {includeCarryover ? "día elegido + pendientes anteriores" : "solo el día elegido"}</small></div><button className="button secondary" onClick={() => downloadCsvZip(exports, `Rutas_${countryProfile.shortLabel}_dia_${day}.zip`)}>Descargar ZIP</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, escribe el día y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
         </section>}
         {tab === "rutas" && routeAuditors.length > 0 && <section className="panel route-map-panel"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Puntos a visitar por auditor</h2><p>Los botones abren Google Maps con la ruta de conducción. Google admite hasta 25 puntos por apertura.</p></div></div><div className="auditor-route-list">{routeAuditors.map((auditor) => { const points = routeRows.filter((row) => auditorOf(row) === auditor); return <div className={mapAuditor === auditor ? "auditor-route active" : "auditor-route"} key={auditor}><button onClick={() => setMapAuditor(auditor)}><i>{auditor.slice(0, 1)}</i><span><strong>{auditor}</strong><small>{points.length} PDV pendientes</small></span><b>Ver puntos</b></button><a href={mapsRouteUrl(points)} target="_blank" rel="noreferrer">Abrir en Google Maps ↗</a></div>; })}</div><div className="map-canvas" aria-label={`Mapa de puntos de ${mapAuditor}`}><div className="map-title"><span>⌖</span><div><strong>{mapAuditor || "Selecciona un auditor"}</strong><small>{mapPoints.length} puntos con coordenadas</small></div></div><div className="map-road road-one"></div><div className="map-road road-two"></div><div className="map-road road-three"></div>{mapBounds && mapPoints.map((row, index) => { const point = coordinatesOf(row)!; const xRange = Math.max(mapBounds.maxLng - mapBounds.minLng, .01); const yRange = Math.max(mapBounds.maxLat - mapBounds.minLat, .01); const left = 8 + ((point.lng - mapBounds.minLng) / xRange) * 84; const top = 87 - ((point.lat - mapBounds.minLat) / yRange) * 75; return <span className="preview-pin" style={{ left: `${left}%`, top: `${top}%` }} title={nameOf(row)} key={`${idOf(row)}-${index}`}>{index + 1}</span>; })}<div className="map-scale">Puntos con LATITUD / LONGITUD</div></div></section>}
         {tab === "dashboard" && <section className="dashboard-view">
-          <div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN · MES COMPLETO</p><h1>Avance de visitas</h1><p>Esta vista ya no depende del día elegido en Rutas. Cruza el <b>ID_de_PDV</b> único del export con <b>Código DN</b> y conserva cualquier valor existente en <b>export.Estado</b>.</p></div><label className="dashboard-country-filter"><span>PAÍS / OPERACIÓN</span><select aria-label="Filtrar dashboard por país" value={dashboardCountry} onChange={(event) => setDashboardCountry(event.target.value as CountryId)}>{COUNTRY_IDS.map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select><small>{dashboardLoading ? "Actualizando información…" : `${dashboardCountryProfile.shortLabel} · Todos los días`}</small></label></div>
+          <div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN · MES COMPLETO</p><h1>Avance de visitas</h1><p>Esta vista ya no depende del día elegido en Rutas. Cruza el <b>ID_de_PDV</b> único del export con <b>Código DN</b> y conserva cualquier valor existente en <b>export.Estado</b>.</p></div><label className="dashboard-country-filter"><span>PAÍS / OPERACIÓN</span><select aria-label="Filtrar dashboard por país" value={dashboardCountry} disabled={role === "Campo"} onChange={(event) => setDashboardCountry(event.target.value as CountryId)}>{(role === "Campo" && allowedCountry ? [allowedCountry] : COUNTRY_IDS).map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select><small>{dashboardLoading ? "Actualizando información…" : `${dashboardCountryProfile.shortLabel} · Todos los días`}</small></label></div>
           <section className="metrics"><Metric label="PDV programados" value={dashboardRows.length} change="Universo completo" tone="blue" icon="⌖"/><Metric label="Visitados" value={dashboardVisits.length} change={visitSnapshot ? "Excel + export diario" : "Estado del Excel"} tone="mint" icon="✓"/><Metric label="Pendientes" value={dashboardRows.length - dashboardVisits.length} change="Todos los días" tone="orange" icon="◷"/><Metric label="Cumplimiento" value={`${dashboardCompletion}%`} change="Avance del universo" tone="purple" icon="↗"/></section>
           <article className="panel day-progress-card"><div className="panel-head"><div><p className="eyebrow">TITULARES POR DÍA</p><h2>Cuántos titulares ya se visitaron</h2><p>El día corresponde a la programación del universo, no al filtro de Rutas.</p></div><span className="day-total">{dashboardDayStats.reduce((total, item) => total + item.done, 0).toLocaleString("es-DO")} visitados</span></div><div className="day-progress-list">{dashboardDayStats.map((item) => { const percent = item.total ? Math.round(item.done / item.total * 100) : 0; return <div className="day-progress-row" key={item.day}><span>Día <b>{item.day}</b></span><div><i style={{ width: `${percent}%` }}></i></div><strong>{item.done}<small> / {item.total}</small></strong><em>{item.pending} pendientes</em></div>; })}{!dashboardDayStats.length && <p className="empty">No hay titulares con día programado en esta base.</p>}</div></article>
           <section className="dashboard-grid"><article className="panel"><div className="panel-head"><div><p className="eyebrow">POR AUDITOR · TODOS LOS DÍAS</p><h2>Seguimiento individual</h2></div></div><div className="data-table"><div className="table-row header"><span>Auditor</span><span>Programados</span><span>Visitados</span><span>Pendientes</span><span>Avance</span></div>{dashboardAuditorProgress.map((item) => <div className="table-row" key={item.auditor}><span><i className="person-dot">{item.auditor[0]}</i>{item.auditor}</span><span>{item.total}</span><span className="done">{item.done}</span><span>{item.pending}</span><span><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b><i className="tiny-bar"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }}></i></i></span></div>)}</div></article><article className="panel selection-card"><p className="eyebrow">POR SELECCIÓN · TODOS LOS DÍAS</p><h2>Prioridad de ejecución</h2>{dashboardBySelection.map((group) => { const percent = group.total ? Math.round(group.done / group.total * 100) : 0; return <div className="selection-row" key={group.selection}><div><span className={group.selection === "T" ? "selection-label t" : "selection-label s"}>{group.selection}</span><p><strong>Selección {group.selection}</strong><small>{group.done} de {group.total} visitados</small></p></div><b>{percent}%</b><div className="wide-bar"><i style={{ width: `${percent}%` }}></i></div></div>; })}<div className="status-note"><span>i</span>{visitSnapshot ? <>{dashboardExportMatches.toLocaleString("es-DO")} PDV de esta base coinciden con <b>{visitSnapshot.sourceName}</b>.</> : <>Carga el export diario desde Administración para cruzar las visitas automáticamente.</>}</div></article></section>
@@ -902,6 +1082,14 @@ export default function Home() {
             <label className="upload-card"><input type="file" accept=".xlsx,.xls" onChange={loadWorkbook}/><span className="upload-icon">↥</span><strong>Cargar nueva base</strong><p>{countryProfile.uploadHint}</p><b>Seleccionar archivo</b></label>
             <article className="panel base-status"><p className="eyebrow">BASE ACTIVA</p><h2>{sourceName}</h2><div className="base-stat"><strong>{rows.length.toLocaleString("es-DO")}</strong><span>PDV en Universo</span></div><div className="base-status-list"><p><span>✓</span> Hoja UNIVERSO detectada</p><p><span>✓</span> Perfil {countryProfile.shortLabel} activo</p><p><span>✓</span> Cruce por Código DN único preparado</p>{country === "cr" && <p><span>{hasAuditorLimits ? "✓" : "i"}</span>{hasAuditorLimits ? "Día por responsable desde Cargue" : "Día escrito en el planificador"}</p>}</div></article>
           </div>
+          <article className="panel visit-import forecast-import">
+            <div className="visit-import-copy"><p className="eyebrow">FORECAST MENSUAL · TODOS LOS PAÍSES</p><h2>Automatizar el día de campo</h2><p>Sube al inicio del mes el archivo con <b>Fecha, Pais, Estudio, Forecast y dia</b>. Cada usuario de Campo verá automáticamente el día correspondiente a su operación y no podrá modificarlo.</p><div className="visit-requirements"><span>✓ Un archivo mensual</span><span>✓ Día automático por país</span><span>✓ Admin conserva el control manual</span></div></div>
+            <label className="visit-upload"><input type="file" accept=".xlsx,.xls" onChange={loadForecast}/><span>↥</span><strong>{forecastSnapshot ? "Reemplazar forecast mensual" : "Cargar forecast mensual"}</strong><small>Columnas requeridas: Fecha, Pais y dia</small><b>Seleccionar Excel</b></label>
+            <div className="visit-status">
+              <p className="eyebrow">{forecastSnapshot ? "FORECAST COMPARTIDO ACTIVO" : "SIN FORECAST CARGADO"}</p>
+              {forecastSnapshot ? <><h3>{forecastSnapshot.sourceName}</h3><strong>{automaticForecast?.day ?? "—"}</strong><span>Día vigente para {countryProfile.shortLabel}</span><dl><div><dt>{forecastSnapshot.entries.filter((entry) => entry.country === country).length}</dt><dd>fechas de esta operación</dd></div><div><dt>{COUNTRY_IDS.filter((countryId) => forecastSnapshot.entries.some((entry) => entry.country === countryId)).length}</dt><dd>operaciones cubiertas</dd></div></dl><small>Actualizado {new Date(forecastSnapshot.uploadedAt).toLocaleString("es-DO", { dateStyle: "medium", timeStyle: "short" })}</small></> : <><h3>Sube el forecast del mes</h3><p>Campo necesita este archivo para recibir el día automáticamente. Administrador podrá seguir escribiendo el día manualmente.</p></>}
+            </div>
+          </article>
           <article className="panel visit-import">
             <div className="visit-import-copy"><p className="eyebrow">EXPORT DIARIO · TODOS LOS PAÍSES</p><h2>Actualizar puntos visitados</h2><p>El sistema cruza el <b>ID_de_PDV único</b> del CSV con <b>Código DN</b> del universo; País se conserva para los resúmenes. Cualquier fila con Estado se considera visitada y deja de generarse en las rutas.</p><div className="visit-requirements"><span>✓ CSV de Informes</span><span>✓ Una sola carga diaria</span><span>✓ Sin modificar los Excel</span></div></div>
             <label className="visit-upload"><input type="file" accept=".csv,text/csv" onChange={loadVisitExport}/><span>↥</span><strong>{visitSnapshot ? "Reemplazar export diario" : "Cargar export diario"}</strong><small>Columnas requeridas: Pais, ID_de_PDV y Estado</small><b>Seleccionar CSV</b></label>
@@ -944,7 +1132,7 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (identity: SessionI
       });
       const body = await response.json() as SessionIdentity & { error?: string };
       if (!response.ok) throw new Error(body.error || "No fue posible iniciar sesión.");
-      onAuthenticated({ username: body.username, role: body.role });
+      onAuthenticated({ username: body.username, role: body.role, country: body.country });
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : "No fue posible iniciar sesión.");
     } finally {
