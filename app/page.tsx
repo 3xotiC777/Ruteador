@@ -516,6 +516,7 @@ export default function Home() {
   const countryProfile = COUNTRY_PROFILES[country];
   const dashboardCountryProfile = COUNTRY_PROFILES[dashboardCountry];
   const hasAuditorLimits = Object.keys(auditorLimits).length > 0;
+  const regionalBase = Boolean(rows[0] && hasField(rows[0], ["Pais", "Estudio"]));
   const studyOptions = useMemo(() => Array.from(new Set(rows.map(studyOf).filter(Boolean))).sort(), [rows]);
   const dashboardStudyOptions = useMemo(() => Array.from(new Set(dashboardBaseRows.map(studyOf).filter(Boolean))).sort(), [dashboardBaseRows]);
   const automaticForecast = useMemo(() => resolveForecastEntry(forecastSnapshot, country, study), [country, forecastSnapshot, study]);
@@ -654,6 +655,7 @@ export default function Home() {
       setRows(body.rows);
       const baseStudies = Array.from(new Set(body.rows.map(studyOf).filter(Boolean))).sort();
       setStudy((current) => baseStudies.some((item) => normalize(item) === normalize(current)) ? current : baseStudies[0] ?? "KO TRD");
+      if (body.rows[0] && hasField(body.rows[0], ["Pais", "Estudio"])) setIncludeCarryover(true);
       setSourceName(body.sourceName);
       setAuditorLimits(body.auditorLimits ?? {});
       setActiveDay(body.defaultDay || 1);
@@ -1210,7 +1212,7 @@ export default function Home() {
           <section className="two-col"><article className="panel progress-panel"><div className="panel-head"><div><p className="eyebrow">AVANCE GENERAL</p><h2>Cumplimiento de hoy</h2></div><button className="mini-link" onClick={() => setTab("dashboard")}>Ver detalle →</button></div><div className="completion"><div className="donut" style={{ "--progress": `${completion * 3.6}deg` } as React.CSSProperties}><div><b>{completion}%</b><small>completado</small></div></div><div className="progress-list">{auditorProgress.slice(0, 3).map((item) => <div className="progress-row" key={item.auditor}><span className="person-dot">{item.auditor.slice(0, 1)}</span><div><strong>{item.auditor}</strong><small>{item.done} visitados · {item.pending} pendientes</small></div><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b></div>)}</div></div></article><article className="panel map-preview"><div className="panel-head"><div><p className="eyebrow">MAPA DEL DÍA</p><h2>Rutas segmentadas</h2></div><button className="mini-link" onClick={() => setTab("rutas")}>Abrir rutas →</button></div><div className="map-grid"><span className="street s1"></span><span className="street s2"></span><span className="street s3"></span><span className="map-pin p1">●</span><span className="map-pin p2">●</span><span className="map-pin p3">●</span><span className="map-pin p4">●</span><div className="map-legend"><b><i></i> Selección T</b><b><i></i> Selección S</b></div></div></article></section>
         </>}
         {tab === "rutas" && <section className="routes-view">
-          <div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS · {countryProfile.shortLabel}</p><h1>Prepara la operación de campo</h1><p>{countryProfile.description}</p></div><div className="date-chip">{countryProfile.cutoffLabel} <strong>{country === "cr" && hasAuditorLimits ? "por auditor" : day}</strong><small>{includeCarryover ? "Con pendientes anteriores" : "Solo el día elegido"}</small></div></div>
+          <div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS · {countryProfile.shortLabel}</p><h1>Prepara la operación de campo</h1><p>{regionalBase ? "Titulares y suplentes por auditor, con el día vigente y pendientes anteriores aún no visitados." : countryProfile.description}</p></div><div className="date-chip">{countryProfile.cutoffLabel} <strong>{country === "cr" && hasAuditorLimits && !regionalBase ? "por auditor" : day}</strong><small>{regionalBase || includeCarryover ? "Con pendientes anteriores" : "Solo el día elegido"}</small></div></div>
           <div className="route-controls panel">
             <div className="control"><label>País / operación</label><select aria-label="País de operación" value={country} disabled={role === "Campo"} onChange={(event) => changeCountry(event.target.value as CountryId)}>{(role === "Campo" && allowedCountry ? [allowedCountry] : COUNTRY_IDS).map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select>{role === "Campo" && <small>Operación asignada a este usuario</small>}</div>
             <div className="control"><label>Estudio</label><select aria-label="Estudio" value={study} onChange={(event) => { setStudy(event.target.value); clearRouteWork(); }}>{studyOptions.map((item) => <option value={item} key={item}>{item}</option>)}</select><small>{studyOptions.length > 1 ? "Selecciona el estudio a rutear" : "Estudio activo en esta base"}</small></div>
