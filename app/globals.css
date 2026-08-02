@@ -227,6 +227,9 @@ body:before{
 .forecast-import .visit-upload{border-color:#83cbbd;background:linear-gradient(145deg,#f8fffd,#eaf8f4)}
 .forecast-import .visit-upload>span{background:linear-gradient(130deg,#128b78,#31b9a0);box-shadow:0 8px 18px #128b7838}
 .forecast-import .visit-status>strong{color:#138a77}
+
+/* Regional consolidated controls */
+@media(min-width:1051px){.route-controls{grid-template-columns:1fr 1fr 130px 1.45fr auto}.dashboard-view .page-heading{flex-wrap:wrap;justify-content:flex-start;gap:14px}.dashboard-view .page-heading>div:first-child{margin-right:auto;max-width:620px}}
 .forecast-alignment{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:11px;margin-bottom:18px;padding:11px 14px;border:1px solid #cfe0f5;border-radius:11px;background:linear-gradient(110deg,#f4f8ff,#edf5ff);box-shadow:0 8px 22px rgba(26,72,137,.055);color:#214b7f}
 .forecast-alignment-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#1f6ddd;color:white;font-size:16px;font-weight:900;box-shadow:0 6px 14px rgba(31,109,221,.2)}
 .forecast-alignment small,.forecast-alignment strong{display:block}.forecast-alignment small{margin-bottom:3px;color:#6a82a3;font-size:8px;letter-spacing:1.15px;font-weight:900}.forecast-alignment strong{font-size:11px;line-height:1.45}.forecast-alignment em{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;font-style:normal;color:#71839b}

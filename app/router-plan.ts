@@ -14,6 +14,7 @@ export type RouterPoint = {
 export type RouterPlan = {
   auditor: string;
   country: string;
+  study?: string;
   createdAt: number;
   points: RouterPoint[];
 };

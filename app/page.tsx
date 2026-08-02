@@ -7,7 +7,7 @@ import { ROUTER_STORAGE_PREFIX, RouterPlan } from "./router-plan";
 
 type Row = Record<string, string | number | null | undefined>;
 type ExportFile = { name: string; rows: Row[] };
-type CountryId = "rd" | "gt-embocen" | "gt-abvo" | "cr";
+type CountryId = "rd" | "gt-embocen" | "gt-abvo" | "cr" | "cl" | "ec" | "pa" | "sv" | "ni" | "hn";
 type AuditorLimits = Record<string, number>;
 type UserRole = "Administrador" | "Campo";
 type SessionIdentity = { username: string; role: UserRole; country: CountryId | null };
@@ -32,7 +32,7 @@ type ForecastStatus = {
 type CountryProfile = {
   label: string;
   shortLabel: string;
-  engine: "rd" | "guatemala" | "cr";
+  engine: "rd" | "guatemala" | "cr" | "generic";
   description: string;
   uploadHint: string;
   cutoffLabel: string;
@@ -138,6 +138,42 @@ const COUNTRY_PROFILES: Record<CountryId, CountryProfile> = {
       { field: "PDV FIJO/PRIORITARIO", detail: "Archivo _T_FIJO" },
     ],
   },
+  cl: {
+    label: "Chile", shortLabel: "Chile", engine: "generic",
+    description: "Rutas regionales por auditor, titulares y suplentes.",
+    uploadHint: "Incluido en el universo regional consolidado", cutoffLabel: "Día de campo",
+    required: [], rules: [{ field: "SELECCION", detail: "CSV T y S por auditor" }, { field: "DIA", detail: "Día vigente y pendientes anteriores" }],
+  },
+  ec: {
+    label: "Ecuador", shortLabel: "Ecuador", engine: "generic",
+    description: "Rutas regionales por auditor, titulares y suplentes.",
+    uploadHint: "Incluido en el universo regional consolidado", cutoffLabel: "Día de campo",
+    required: [], rules: [{ field: "SELECCION", detail: "CSV T y S por auditor" }, { field: "DIA", detail: "Día vigente y pendientes anteriores" }],
+  },
+  pa: {
+    label: "Panamá", shortLabel: "Panamá", engine: "generic",
+    description: "Rutas regionales por auditor, titulares y suplentes.",
+    uploadHint: "Incluido en el universo regional consolidado", cutoffLabel: "Día de campo",
+    required: [], rules: [{ field: "SELECCION", detail: "CSV T y S por auditor" }, { field: "DIA", detail: "Día vigente y pendientes anteriores" }],
+  },
+  sv: {
+    label: "El Salvador", shortLabel: "El Salvador", engine: "generic",
+    description: "Rutas regionales por auditor, titulares y suplentes.",
+    uploadHint: "Incluido en el universo regional consolidado", cutoffLabel: "Día de campo",
+    required: [], rules: [{ field: "SELECCION", detail: "CSV T y S por auditor" }, { field: "DIA", detail: "Día vigente y pendientes anteriores" }],
+  },
+  ni: {
+    label: "Nicaragua", shortLabel: "Nicaragua", engine: "generic",
+    description: "Operación preparada para recibir puntos en próximas bases.",
+    uploadHint: "Incluido en el universo regional consolidado", cutoffLabel: "Día de campo",
+    required: [], rules: [{ field: "SELECCION", detail: "CSV T y S por auditor" }, { field: "DIA", detail: "Día vigente y pendientes anteriores" }],
+  },
+  hn: {
+    label: "Honduras", shortLabel: "Honduras", engine: "generic",
+    description: "Operación preparada para recibir puntos en próximas bases.",
+    uploadHint: "Incluido en el universo regional consolidado", cutoffLabel: "Día de campo",
+    required: [], rules: [{ field: "SELECCION", detail: "CSV T y S por auditor" }, { field: "DIA", detail: "Día vigente y pendientes anteriores" }],
+  },
 };
 const COUNTRY_IDS = Object.keys(COUNTRY_PROFILES) as CountryId[];
 const COUNTRY_VISIT_ALIASES: Record<CountryId, string[]> = {
@@ -145,12 +181,24 @@ const COUNTRY_VISIT_ALIASES: Record<CountryId, string[]> = {
   "gt-embocen": ["EMBOCEN GUATEMALA", "GUATEMALA EMBOCEN", "GUATEMALA"],
   "gt-abvo": ["GUATEMALA ABVO", "ABVO GUATEMALA", "GUATEMALA"],
   cr: ["COSTA RICA"],
+  cl: ["CHILE"],
+  ec: ["ECUADOR"],
+  pa: ["PANAMA"],
+  sv: ["EL SALVADOR", "SALVADOR"],
+  ni: ["NICARAGUA"],
+  hn: ["HONDURAS"],
 };
 const FORECAST_COUNTRY_ALIASES: Record<CountryId, string[]> = {
   rd: ["REPUBLICA DOMINICANA"],
   "gt-embocen": ["GUATEMALA EMBO", "GUATEMALA EMBOCEN", "EMBOCEN GUATEMALA"],
   "gt-abvo": ["GUATEMALA ABVO", "ABVO GUATEMALA"],
   cr: ["COSTA RICA"],
+  cl: ["CHILE"],
+  ec: ["ECUADOR"],
+  pa: ["PANAMA"],
+  sv: ["EL SALVADOR", "SALVADOR"],
+  ni: ["NICARAGUA"],
+  hn: ["HONDURAS"],
 };
 
 const demoRows: Row[] = [
@@ -169,6 +217,10 @@ const demoRows: Row[] = [
 const normalize = (entry: unknown) => String(entry ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 const normalizeVisitCountry = (entry: unknown) => String(entry ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, " ").trim().replace(/\s+/g, " ").toUpperCase();
 const normalizeVisitId = (entry: unknown) => String(entry ?? "").trim().replace(/^["']|["']$/g, "").replace(/\.0+$/, "").toUpperCase();
+const normalizeExportVisitId = (country: unknown, entry: unknown) => {
+  const normalized = normalizeVisitId(entry);
+  return normalizeVisitCountry(country) === "EL SALVADOR" && /^60\d{8}$/.test(normalized) ? normalized.slice(2) : normalized;
+};
 const visitKey = (country: unknown, id: unknown) => {
   const normalizedCountry = normalizeVisitCountry(country);
   const normalizedId = normalizeVisitId(id);
@@ -202,24 +254,25 @@ const forecastCountry = (entry: unknown): CountryId | null => {
   const normalized = normalizeVisitCountry(entry);
   return COUNTRY_IDS.find((countryId) => FORECAST_COUNTRY_ALIASES[countryId].includes(normalized)) ?? null;
 };
-const resolveForecastEntry = (snapshot: ForecastSnapshot | null, country: CountryId, date = localIsoDate()) => {
+const resolveForecastEntry = (snapshot: ForecastSnapshot | null, country: CountryId, study = "", date = localIsoDate()) => {
   const month = date.slice(0, 7);
-  const entries = (snapshot?.entries ?? []).filter((entry) => entry.country === country && entry.date.startsWith(month)).sort((left, right) => left.date.localeCompare(right.date));
+  const normalizedStudy = normalize(study);
+  const entries = (snapshot?.entries ?? []).filter((entry) => entry.country === country && entry.date.startsWith(month) && (!normalizedStudy || !normalize(entry.study) || normalize(entry.study) === normalizedStudy)).sort((left, right) => left.date.localeCompare(right.date));
   if (!entries.length) return null;
   const exact = entries.find((entry) => entry.date === date);
   if (exact) return exact;
   if (date < entries[0].date || date > entries[entries.length - 1].date) return null;
   return [...entries].reverse().find((entry) => entry.date <= date) ?? null;
 };
-const forecastStatusFor = (snapshot: ForecastSnapshot | null, country: CountryId, date = localIsoDate()): ForecastStatus => {
+const forecastStatusFor = (snapshot: ForecastSnapshot | null, country: CountryId, study = "", date = localIsoDate()): ForecastStatus => {
   const month = date.slice(0, 7);
   const entries = (snapshot?.entries ?? [])
-    .filter((entry) => entry.country === country && entry.date.startsWith(month))
+    .filter((entry) => entry.country === country && entry.date.startsWith(month) && (!normalize(study) || !normalize(entry.study) || normalize(entry.study) === normalize(study)))
     .sort((left, right) => left.date.localeCompare(right.date));
   if (!entries.length) return { kind: "missing", entry: null };
   if (date < entries[0].date) return { kind: "upcoming", entry: entries[0] };
   if (date > entries[entries.length - 1].date) return { kind: "closed", entry: entries[entries.length - 1] };
-  return { kind: "active", entry: resolveForecastEntry(snapshot, country, date) };
+  return { kind: "active", entry: resolveForecastEntry(snapshot, country, study, date) };
 };
 const humanForecastDate = (date: string) => new Date(`${date}T12:00:00`).toLocaleDateString("es-DO", {
   day: "numeric",
@@ -240,15 +293,18 @@ const hasField = (row: Row, names: string[]) => Object.keys(row).some((header) =
 const dayOf = (row: Row) => Number(value(row, ["DIA", "Dia_Asignado"]).match(/\d+/)?.[0]) || 0;
 const idOf = (row: Row) => preferredValue(row, ["Código DN", "Codigo DN", "ID cliente/PDV", "CODIGO D&N", "RefID", "Codigo", "CÓDIGO"]);
 const auditorOf = (row: Row) => {
+  if (hasField(row, ["Auditor"])) return value(row, ["Auditor"]);
   if (hasField(row, ["Tabla11.auditor"])) return value(row, ["Tabla11.auditor"]);
   if (hasField(row, ["Responsable"])) return value(row, ["Responsable"]);
-  return value(row, ["MT", "auditor"]);
+  return preferredValue(row, ["MT FINAL", "MT"]);
 };
 const selectedOf = (row: Row) => value(row, ["SELECCION"]).toUpperCase() || (hasField(row, ["DESCARGAR"]) ? "T" : "");
-const isTitular = (row: Row) => selectedOf(row) === "T";
-const isSupplemental = (row: Row) => /^S\d*$/.test(selectedOf(row));
+const isTitular = (row: Row) => /^T(?:\s|$)/.test(selectedOf(row));
+const isSupplemental = (row: Row) => /^S(?:\d|\s|$)/.test(selectedOf(row));
 const selectionGroupOf = (row: Row) => isTitular(row) ? "T" : isSupplemental(row) ? "S" : "";
-const fixedOf = (row: Row) => value(row, ["CLIENTE FIJO 30%", "FIJO", "Cliente Fijo", "PDV FIJO/PRIORITARIO"]);
+const fixedOf = (row: Row) => value(row, ["CLIENTE FIJO 30%", "FIJOS", "FIJO", "Cliente Fijo", "PDV FIJO/PRIORITARIO"]);
+const studyOf = (row: Row) => value(row, ["Estudio", "ESTUDIO"]) || "Sin estudio";
+const countryOf = (row: Row) => forecastCountry(value(row, ["Pais", "País"]));
 const statusOf = (row: Row) => value(row, ["export.Estado"]);
 const nameOf = (row: Row) => value(row, ["NAME Cliente (PDV)", "Nombre", "Negocio", "Nombre de Cliente", "PDV"]);
 const channelOf = (row: Row) => value(row, ["TIPO CLIENTE ICE (D&N)", "SUB CANAL", "TIPO", "Tipo Canal", "Tipo de Canal", "SubCanal", "Canal"]);
@@ -256,14 +312,14 @@ const routeLabelOf = (row: Row) => value(row, ["RUTA PREVENTA", "Ruta DN", "Ruta
 const addressOf = (row: Row) => value(row, ["DIRECCIÓN", "Direccion 1", "Dirección 1", "DireccionPDV", "Direccion"]);
 const pointTypeOf = (row: Row) => selectedOf(row);
 const routeOrderOf = (row: Row) => Number(value(row, ["Orden_Ruta"]).match(/\d+/)?.[0]) || Number.MAX_SAFE_INTEGER;
-const shouldLoad = (row: Row) => normalize(value(row, ["MUESTRA CUMPL.", "DESCARGAR"])) === "CARGAR";
+const shouldLoad = (row: Row) => !hasField(row, ["MUESTRA CUMPL.", "DESCARGAR"]) || normalize(value(row, ["MUESTRA CUMPL.", "DESCARGAR"])) === "CARGAR";
 const coordinatesOf = (row: Row) => {
   const lat = Number(value(row, ["LATITUD", "LATITUDE", "Latitud"]).replace(",", "."));
   const lng = Number(value(row, ["LONGITUD", "LONGITUDE", "Longitud"]).replace(",", "."));
   return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0 ? { lat, lng } : null;
 };
 const matchesRequiredHeaders = (headers: string[], profile: CountryProfile) => profile.required.every((field) => field.aliases.some((alias) => headers.some((header) => normalize(header) === normalize(alias))));
-const detectCountry = (headers: string[]) => COUNTRY_IDS.find((countryId) => matchesRequiredHeaders(headers, COUNTRY_PROFILES[countryId]));
+const detectCountry = (headers: string[]) => COUNTRY_IDS.find((countryId) => COUNTRY_PROFILES[countryId].required.length > 0 && matchesRequiredHeaders(headers, COUNTRY_PROFILES[countryId]));
 const mapsRouteUrl = (points: Row[]) => {
   const coordinates = points.map(coordinatesOf).filter((point): point is { lat: number; lng: number } => Boolean(point)).slice(0, 25);
   if (!coordinates.length) return "https://www.google.com/maps";
@@ -398,6 +454,7 @@ const openAuditorRouter = (auditor: string, country: string, rows: Row[]) => {
   const plan: RouterPlan = {
     auditor,
     country,
+    study: studyOf(rows[0] ?? {}),
     createdAt: Date.now(),
     points: rows.map((row, index) => {
       const coordinates = coordinatesOf(row);
@@ -438,6 +495,8 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [country, setCountry] = useState<CountryId>("rd");
   const [dashboardCountry, setDashboardCountry] = useState<CountryId>("rd");
+  const [study, setStudy] = useState("KO TRD");
+  const [dashboardStudy, setDashboardStudy] = useState("KO TRD");
   const [dashboardBaseRows, setDashboardBaseRows] = useState<Row[]>([]);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [auditorLimits, setAuditorLimits] = useState<AuditorLimits>({});
@@ -457,12 +516,15 @@ export default function Home() {
   const countryProfile = COUNTRY_PROFILES[country];
   const dashboardCountryProfile = COUNTRY_PROFILES[dashboardCountry];
   const hasAuditorLimits = Object.keys(auditorLimits).length > 0;
-  const automaticForecast = useMemo(() => resolveForecastEntry(forecastSnapshot, country), [country, forecastSnapshot]);
+  const studyOptions = useMemo(() => Array.from(new Set(rows.map(studyOf).filter(Boolean))).sort(), [rows]);
+  const dashboardStudyOptions = useMemo(() => Array.from(new Set(dashboardBaseRows.map(studyOf).filter(Boolean))).sort(), [dashboardBaseRows]);
+  const automaticForecast = useMemo(() => resolveForecastEntry(forecastSnapshot, country, study), [country, forecastSnapshot, study]);
   const visibleForecastCountry = tab === "dashboard" ? dashboardCountry : country;
+  const visibleForecastStudy = tab === "dashboard" ? dashboardStudy : study;
   const visibleForecastProfile = COUNTRY_PROFILES[visibleForecastCountry];
   const visibleForecastStatus = useMemo(
-    () => forecastStatusFor(forecastSnapshot, visibleForecastCountry),
-    [forecastSnapshot, visibleForecastCountry],
+    () => forecastStatusFor(forecastSnapshot, visibleForecastCountry, visibleForecastStudy),
+    [forecastSnapshot, visibleForecastCountry, visibleForecastStudy],
   );
   const forecastAlignmentMessage = useMemo(() => {
     const today = localIsoDate();
@@ -489,12 +551,13 @@ export default function Home() {
     const excelStatus = statusOf(row);
     return Boolean(excelStatus && normalize(excelStatus) !== "NULL") || hasExportVisit(row);
   }, [hasExportVisit]);
-  const scheduled = useMemo(() => rows.filter((row) => dayOf(row) === day), [day, rows]);
-  const extras = useMemo(() => rows.filter((row) => extraIds.includes(idOf(row))), [extraIds, rows]);
-  const filteredPoints = useMemo(() => rows.filter((row) => {
+  const studyRows = useMemo(() => rows.filter((row) => normalize(studyOf(row)) === normalize(study)), [rows, study]);
+  const scheduled = useMemo(() => studyRows.filter((row) => dayOf(row) === day), [day, studyRows]);
+  const extras = useMemo(() => studyRows.filter((row) => extraIds.includes(idOf(row))), [extraIds, studyRows]);
+  const filteredPoints = useMemo(() => studyRows.filter((row) => {
     const haystack = `${idOf(row)} ${nameOf(row)} ${auditorOf(row)} ${channelOf(row)} ${routeLabelOf(row)}`.toLowerCase();
     return haystack.includes(search.toLowerCase()) && dayOf(row) !== day && !isVisited(row);
-  }), [rows, search, day, isVisited]);
+  }), [studyRows, search, day, isVisited]);
   const visits = useMemo(() => scheduled.filter(isVisited), [isVisited, scheduled]);
   const exportMatches = useMemo(() => rows.filter(hasExportVisit).length, [hasExportVisit, rows]);
   const completion = scheduled.length ? Math.round((visits.length / scheduled.length) * 100) : 0;
@@ -511,7 +574,7 @@ export default function Home() {
     const excelStatus = statusOf(row);
     return Boolean(excelStatus && normalize(excelStatus) !== "NULL") || dashboardHasExportVisit(row);
   }, [dashboardHasExportVisit]);
-  const dashboardRows = useMemo(() => dashboardBaseRows.filter((row) => dayOf(row) >= 1), [dashboardBaseRows]);
+  const dashboardRows = useMemo(() => dashboardBaseRows.filter((row) => dayOf(row) >= 1 && normalize(studyOf(row)) === normalize(dashboardStudy)), [dashboardBaseRows, dashboardStudy]);
   const dashboardVisits = useMemo(() => dashboardRows.filter(dashboardIsVisited), [dashboardRows, dashboardIsVisited]);
   const dashboardExportMatches = useMemo(() => dashboardBaseRows.filter(dashboardHasExportVisit).length, [dashboardBaseRows, dashboardHasExportVisit]);
   const dashboardCompletion = dashboardRows.length ? Math.round(dashboardVisits.length / dashboardRows.length * 100) : 0;
@@ -589,6 +652,8 @@ export default function Home() {
 
       setCountry(nextCountry);
       setRows(body.rows);
+      const baseStudies = Array.from(new Set(body.rows.map(studyOf).filter(Boolean))).sort();
+      setStudy((current) => baseStudies.some((item) => normalize(item) === normalize(current)) ? current : baseStudies[0] ?? "KO TRD");
       setSourceName(body.sourceName);
       setAuditorLimits(body.auditorLimits ?? {});
       setActiveDay(body.defaultDay || 1);
@@ -715,6 +780,8 @@ export default function Home() {
             const body = JSON.parse(text) as CountryBase;
             if (active && Array.isArray(body.rows)) {
               setDashboardBaseRows(body.rows);
+              const baseStudies = Array.from(new Set(body.rows.map(studyOf).filter(Boolean))).sort();
+              setDashboardStudy((current) => baseStudies.some((item) => normalize(item) === normalize(current)) ? current : baseStudies[0] ?? "KO TRD");
               return;
             }
           }
@@ -740,6 +807,51 @@ export default function Home() {
       const loaded = XLSX.utils.sheet_to_json<Row>(universe, { defval: "" });
       if (!loaded.length) throw new Error("UNIVERSO no tiene puntos para cargar.");
       const headers = Object.keys(loaded[0] ?? {});
+      const consolidatedFields = ["Código DN", "PDV", "SELECCION", "Auditor", "DIA", "Pais", "Estudio"];
+      const consolidated = consolidatedFields.every((field) => headers.some((header) => normalize(header) === normalize(field)));
+
+      if (consolidated) {
+        const grouped = Object.fromEntries(COUNTRY_IDS.map((countryId) => [countryId, [] as Row[]])) as Record<CountryId, Row[]>;
+        let ignored = 0;
+        loaded.forEach((row) => {
+          const rowCountry = countryOf(row);
+          if (rowCountry) grouped[rowCountry].push(row);
+          else ignored += 1;
+        });
+        if (!COUNTRY_IDS.some((countryId) => grouped[countryId].length)) throw new Error("No se reconoció ningún país del universo consolidado.");
+
+        const updatedAt = Date.now();
+        setNotice(`Publicando ${loaded.length.toLocaleString("es-DO")} PDV para ${COUNTRY_IDS.length} operaciones…`);
+        for (const countryId of COUNTRY_IDS) {
+          const countryRows = grouped[countryId];
+          const validDays = countryRows.map(dayOf).filter((loadedDay) => loadedDay >= 1);
+          const payload: CountryBase = {
+            rows: countryRows,
+            sourceName: file.name,
+            auditorLimits: {},
+            defaultDay: validDays.length ? Math.min(...validDays) : 1,
+            updatedAt,
+          };
+          await uploadJsonObject(`active-bases/${countryId}.json`, payload);
+          baseVersions.current[countryId] = updatedAt;
+        }
+
+        const activeRows = grouped[country];
+        const activeStudies = Array.from(new Set(activeRows.map(studyOf).filter(Boolean))).sort();
+        setRows(activeRows);
+        setSourceName(file.name);
+        setAuditorLimits({});
+        setStudy(activeStudies[0] ?? "KO TRD");
+        setIncludeCarryover(true);
+        clearRouteWork();
+        const validDays = activeRows.map(dayOf).filter((loadedDay) => loadedDay >= 1);
+        setActiveDay(validDays.length ? Math.min(...validDays) : 1);
+        const operationSummary = COUNTRY_IDS.map((countryId) => `${COUNTRY_PROFILES[countryId].shortLabel}: ${grouped[countryId].length.toLocaleString("es-DO")}`).join(" · ");
+        setNotice(`Universo regional publicado: ${operationSummary}.${ignored ? ` ${ignored.toLocaleString("es-DO")} filas sin país reconocido fueron omitidas.` : ""}`);
+        event.target.value = "";
+        return;
+      }
+
       const detectedCountry = detectCountry(headers);
       const effectiveCountry = detectedCountry ?? country;
       const effectiveProfile = COUNTRY_PROFILES[effectiveCountry];
@@ -785,6 +897,8 @@ export default function Home() {
       baseVersions.current[effectiveCountry] = savedBase.updatedAt;
 
       setCountry(effectiveCountry); setRows(savedBase.rows); setSourceName(savedBase.sourceName); setAuditorLimits(savedBase.auditorLimits);
+      const loadedStudies = Array.from(new Set(savedBase.rows.map(studyOf).filter(Boolean))).sort();
+      setStudy(loadedStudies[0] ?? "KO TRD");
       clearRouteWork(); setActiveDay(savedBase.defaultDay);
       const detectedNote = effectiveCountry !== country ? ` Se detectó automáticamente ${effectiveProfile.label}.` : "";
       const costaRicaNote = effectiveCountry === "cr" && !cargueName ? " El archivo no incluye Cargue; se usará el día seleccionado como corte para todos los responsables." : "";
@@ -824,8 +938,9 @@ export default function Home() {
         const idValue = value(row, idAliases);
         const state = value(row, stateAliases);
         if (!state || normalize(state) === "NULL") continue;
-        const countryValueNormalized = normalizeVisitCountry(countryValue);
-        const idValueNormalized = normalizeVisitId(idValue);
+        const rawCountryNormalized = normalizeVisitCountry(countryValue);
+        const countryValueNormalized = !rawCountryNormalized || rawCountryNormalized === "NULL" ? "SIN PAIS" : rawCountryNormalized;
+        const idValueNormalized = normalizeExportVisitId(countryValueNormalized, idValue);
         const key = visitKey(countryValueNormalized, idValueNormalized);
         if (!key) continue;
         rowsWithStatus += 1;
@@ -944,7 +1059,7 @@ export default function Home() {
         body = saved;
       }
       setForecastSnapshot(body);
-      const active = resolveForecastEntry(body, country);
+      const active = resolveForecastEntry(body, country, study);
       if (active) setActiveDay(active.day);
       const coverage = COUNTRY_IDS.filter((countryId) => body.entries.some((entry) => entry.country === countryId)).length;
       setNotice(`Forecast ${file.name} cargado: ${entries.length.toLocaleString("es-DO")} fechas válidas y ${coverage} operaciones cubiertas.`);
@@ -993,23 +1108,30 @@ export default function Home() {
       setNotice("No hay un día automático disponible para esta operación. Administrador debe cargar el forecast del mes.");
       return;
     }
-    const base = rows.filter((row) => {
+    const genericRegional = Boolean(studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]));
+    const carryoverEnabled = genericRegional || includeCarryover;
+    const base = studyRows.filter((row) => {
       const scheduledDay = dayOf(row);
-      if (countryProfile.engine === "cr" && hasAuditorLimits && auditorLimits[auditorOf(row)] === undefined) return false;
-      const rowTargetDay = countryProfile.engine === "cr" ? auditorLimits[auditorOf(row)] ?? day : day;
-      const matchesDay = includeCarryover
+      if (!genericRegional && countryProfile.engine === "cr" && hasAuditorLimits && auditorLimits[auditorOf(row)] === undefined) return false;
+      const rowTargetDay = !genericRegional && countryProfile.engine === "cr" ? auditorLimits[auditorOf(row)] ?? day : day;
+      const matchesDay = carryoverEnabled
         ? scheduledDay >= 1 && scheduledDay <= rowTargetDay
         : scheduledDay === rowTargetDay;
-      return shouldLoad(row) && !isVisited(row) && matchesDay;
+      return shouldLoad(row) && !isVisited(row) && matchesDay && Boolean(selectionGroupOf(row));
     });
     const all = [...base, ...extras.filter((row) => !isVisited(row) && !base.some((baseRow) => idOf(baseRow) === idOf(row)))];
     const files: ExportFile[] = [];
     for (const auditor of Array.from(new Set(all.map(auditorOf).filter(Boolean)))) {
       const perAuditor = all.filter((row) => auditorOf(row) === auditor);
-      const t = perAuditor.filter((row) => pointTypeOf(row) === "T");
+      const t = perAuditor.filter(isTitular);
       const supplements = perAuditor.filter(isSupplemental);
       let segments: [string, Row[]][];
-      if (countryProfile.engine === "guatemala") {
+      if (genericRegional) {
+        segments = [
+          ["T", t],
+          ["S", supplements],
+        ];
+      } else if (countryProfile.engine === "guatemala") {
         segments = [
           ["T", t],
           ["T_ON", t.filter((row) => channelOf(row).toUpperCase() === "ON PREMISE")],
@@ -1034,8 +1156,8 @@ export default function Home() {
       segments.filter(([, points]) => points.length).forEach(([segment, points]) => files.push({ name: `${auditor}_${segment}.csv`, rows: points }));
     }
     setExports(files); setRouteRows(all); setMapAuditor(auditorOf(all[0] ?? {})); setTab("rutas");
-    const selectedDayDescription = countryProfile.engine === "cr" && hasAuditorLimits ? "los días definidos en Cargue" : `el día ${day}`;
-    const scopeDescription = includeCarryover ? `${selectedDayDescription}, incluyendo pendientes anteriores` : `solo ${selectedDayDescription}`;
+    const selectedDayDescription = !genericRegional && countryProfile.engine === "cr" && hasAuditorLimits ? "los días definidos en Cargue" : `el día ${day}`;
+    const scopeDescription = carryoverEnabled ? `${selectedDayDescription}, incluyendo pendientes anteriores` : `solo ${selectedDayDescription}`;
     setNotice(files.length ? `${files.length} archivos CSV de ${countryProfile.label} listos con ${scopeDescription}. ${extras.length ? `${extras.length} excepción(es) incluida(s).` : ""}` : `No se encontraron PDV pendientes para ${scopeDescription}. Revisa los campos indicados en las reglas de ${countryProfile.label}.`);
   };
 
@@ -1091,16 +1213,17 @@ export default function Home() {
           <div className="page-heading"><div><p className="eyebrow">PLANIFICADOR DE RUTAS · {countryProfile.shortLabel}</p><h1>Prepara la operación de campo</h1><p>{countryProfile.description}</p></div><div className="date-chip">{countryProfile.cutoffLabel} <strong>{country === "cr" && hasAuditorLimits ? "por auditor" : day}</strong><small>{includeCarryover ? "Con pendientes anteriores" : "Solo el día elegido"}</small></div></div>
           <div className="route-controls panel">
             <div className="control"><label>País / operación</label><select aria-label="País de operación" value={country} disabled={role === "Campo"} onChange={(event) => changeCountry(event.target.value as CountryId)}>{(role === "Campo" && allowedCountry ? [allowedCountry] : COUNTRY_IDS).map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select>{role === "Campo" && <small>Operación asignada a este usuario</small>}</div>
+            <div className="control"><label>Estudio</label><select aria-label="Estudio" value={study} onChange={(event) => { setStudy(event.target.value); clearRouteWork(); }}>{studyOptions.map((item) => <option value={item} key={item}>{item}</option>)}</select><small>{studyOptions.length > 1 ? "Selecciona el estudio a rutear" : "Estudio activo en esta base"}</small></div>
             <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={dayInput} disabled={role === "Campo"} onChange={(event) => setDayInput(event.target.value.replace(/\D/g, "").slice(0, 2))} onBlur={commitDayInput} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} aria-label="Escribir día de campo"/><small>{role === "Campo" ? automaticForecast ? `Automático · Forecast ${automaticForecast.date}` : "Sin forecast vigente; Administrador debe cargarlo" : "Escribe el número y presiona Enter"}</small></div>
             <div className="control source"><label>Base activa</label><strong>▣ {sourceName}</strong><small>{rows.length.toLocaleString("es-DO")} PDV · {exportMatches.toLocaleString("es-DO")} visitados en export</small></div>
             <button className="button primary generate" onClick={createRoutes} disabled={!rows.length || (role === "Campo" && !automaticForecast)}>Cargar rutas <span>→</span></button>
-            <label className="carryover-toggle"><input type="checkbox" checked={includeCarryover} onChange={(event) => setIncludeCarryover(event.target.checked)}/><span><b>Incluir pendientes de días anteriores</b><small>Actívalo solo cuando quieras el arrastre acumulado de la macro.</small></span></label>
+            <label className="carryover-toggle"><input type="checkbox" checked={studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]) ? true : includeCarryover} disabled={Boolean(studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]))} onChange={(event) => setIncludeCarryover(event.target.checked)}/><span><b>Incluir pendientes de días anteriores</b><small>{studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]) ? "Activo para el universo regional: solo arrastra puntos aún no visitados." : "Actívalo cuando quieras el arrastre acumulado de la macro."}</small></span></label>
           </div>
           <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {includeCarryover ? "día elegido + pendientes anteriores" : "solo el día elegido"}</small></div><button className="button secondary" onClick={() => downloadCsvZip(exports, `Rutas_${countryProfile.shortLabel}_dia_${day}.zip`)}>Descargar ZIP</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, escribe el día y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
         </section>}
         {tab === "rutas" && routeAuditors.length > 0 && <section className="panel route-map-panel"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Puntos a visitar por auditor</h2><p>Los botones abren Google Maps con la ruta de conducción. Google admite hasta 25 puntos por apertura.</p></div></div><div className="auditor-route-list">{routeAuditors.map((auditor) => { const points = routeRows.filter((row) => auditorOf(row) === auditor); return <div className={mapAuditor === auditor ? "auditor-route active" : "auditor-route"} key={auditor}><button onClick={() => setMapAuditor(auditor)}><i>{auditor.slice(0, 1)}</i><span><strong>{auditor}</strong><small>{points.length} PDV pendientes</small></span><b>Ver puntos</b></button><a href={mapsRouteUrl(points)} target="_blank" rel="noreferrer">Abrir en Google Maps ↗</a></div>; })}</div><div className="map-canvas" aria-label={`Mapa de puntos de ${mapAuditor}`}><div className="map-title"><span>⌖</span><div><strong>{mapAuditor || "Selecciona un auditor"}</strong><small>{mapPoints.length} puntos con coordenadas</small></div></div><div className="map-road road-one"></div><div className="map-road road-two"></div><div className="map-road road-three"></div>{mapBounds && mapPoints.map((row, index) => { const point = coordinatesOf(row)!; const xRange = Math.max(mapBounds.maxLng - mapBounds.minLng, .01); const yRange = Math.max(mapBounds.maxLat - mapBounds.minLat, .01); const left = 8 + ((point.lng - mapBounds.minLng) / xRange) * 84; const top = 87 - ((point.lat - mapBounds.minLat) / yRange) * 75; return <span className="preview-pin" style={{ left: `${left}%`, top: `${top}%` }} title={nameOf(row)} key={`${idOf(row)}-${index}`}>{index + 1}</span>; })}<div className="map-scale">Puntos con LATITUD / LONGITUD</div></div></section>}
         {tab === "dashboard" && <section className="dashboard-view">
-          <div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN · MES COMPLETO</p><h1>Avance de visitas</h1><p>Esta vista ya no depende del día elegido en Rutas. Cruza el <b>ID_de_PDV</b> único del export con <b>Código DN</b> y conserva cualquier valor existente en <b>export.Estado</b>.</p></div><label className="dashboard-country-filter"><span>PAÍS / OPERACIÓN</span><select aria-label="Filtrar dashboard por país" value={dashboardCountry} disabled={role === "Campo"} onChange={(event) => setDashboardCountry(event.target.value as CountryId)}>{(role === "Campo" && allowedCountry ? [allowedCountry] : COUNTRY_IDS).map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select><small>{dashboardLoading ? "Actualizando información…" : `${dashboardCountryProfile.shortLabel} · Todos los días`}</small></label></div>
+          <div className="page-heading"><div><p className="eyebrow">CONTROL DE EJECUCIÓN · MES COMPLETO</p><h1>Avance de visitas</h1><p>Esta vista ya no depende del día elegido en Rutas. Cruza el <b>ID_de_PDV</b> único del export con <b>Código DN</b> y conserva cualquier valor existente en <b>export.Estado</b>.</p></div><label className="dashboard-country-filter"><span>PAÍS / OPERACIÓN</span><select aria-label="Filtrar dashboard por país" value={dashboardCountry} disabled={role === "Campo"} onChange={(event) => setDashboardCountry(event.target.value as CountryId)}>{(role === "Campo" && allowedCountry ? [allowedCountry] : COUNTRY_IDS).map((countryId) => <option value={countryId} key={countryId}>{COUNTRY_PROFILES[countryId].label}</option>)}</select><small>{dashboardLoading ? "Actualizando información…" : `${dashboardCountryProfile.shortLabel} · Todos los días`}</small></label><label className="dashboard-country-filter"><span>ESTUDIO</span><select aria-label="Filtrar dashboard por estudio" value={dashboardStudy} onChange={(event) => setDashboardStudy(event.target.value)}>{dashboardStudyOptions.map((item) => <option value={item} key={item}>{item}</option>)}</select><small>Avance independiente por estudio</small></label></div>
           <section className="metrics"><Metric label="PDV programados" value={dashboardRows.length} change="Universo completo" tone="blue" icon="⌖"/><Metric label="Visitados" value={dashboardVisits.length} change={visitSnapshot ? "Excel + export diario" : "Estado del Excel"} tone="mint" icon="✓"/><Metric label="Pendientes" value={dashboardRows.length - dashboardVisits.length} change="Todos los días" tone="orange" icon="◷"/><Metric label="Cumplimiento" value={`${dashboardCompletion}%`} change="Avance del universo" tone="purple" icon="↗"/></section>
           <article className="panel day-progress-card"><div className="panel-head"><div><p className="eyebrow">TITULARES POR DÍA</p><h2>Cuántos titulares ya se visitaron</h2><p>El día corresponde a la programación del universo, no al filtro de Rutas.</p></div><span className="day-total">{dashboardDayStats.reduce((total, item) => total + item.done, 0).toLocaleString("es-DO")} visitados</span></div><div className="day-progress-list">{dashboardDayStats.map((item) => { const percent = item.total ? Math.round(item.done / item.total * 100) : 0; return <div className="day-progress-row" key={item.day}><span>Día <b>{item.day}</b></span><div><i style={{ width: `${percent}%` }}></i></div><strong>{item.done}<small> / {item.total}</small></strong><em>{item.pending} pendientes</em></div>; })}{!dashboardDayStats.length && <p className="empty">No hay titulares con día programado en esta base.</p>}</div></article>
           <section className="dashboard-grid"><article className="panel"><div className="panel-head"><div><p className="eyebrow">POR AUDITOR · TODOS LOS DÍAS</p><h2>Seguimiento individual</h2></div></div><div className="data-table"><div className="table-row header"><span>Auditor</span><span>Programados</span><span>Visitados</span><span>Pendientes</span><span>Avance</span></div>{dashboardAuditorProgress.map((item) => <div className="table-row" key={item.auditor}><span><i className="person-dot">{item.auditor[0]}</i>{item.auditor}</span><span>{item.total}</span><span className="done">{item.done}</span><span>{item.pending}</span><span><b>{item.total ? Math.round(item.done / item.total * 100) : 0}%</b><i className="tiny-bar"><i style={{ width: `${item.total ? item.done / item.total * 100 : 0}%` }}></i></i></span></div>)}</div></article><article className="panel selection-card"><p className="eyebrow">POR SELECCIÓN · TODOS LOS DÍAS</p><h2>Prioridad de ejecución</h2>{dashboardBySelection.map((group) => { const percent = group.total ? Math.round(group.done / group.total * 100) : 0; return <div className="selection-row" key={group.selection}><div><span className={group.selection === "T" ? "selection-label t" : "selection-label s"}>{group.selection}</span><p><strong>Selección {group.selection}</strong><small>{group.done} de {group.total} visitados</small></p></div><b>{percent}%</b><div className="wide-bar"><i style={{ width: `${percent}%` }}></i></div></div>; })}<div className="status-note"><span>i</span>{visitSnapshot ? <>{dashboardExportMatches.toLocaleString("es-DO")} PDV de esta base coinciden con <b>{visitSnapshot.sourceName}</b>.</> : <>Carga el export diario desde Administración para cruzar las visitas automáticamente.</>}</div></article></section>
@@ -1108,7 +1231,7 @@ export default function Home() {
         {tab === "base" && fieldMode && <section className="base-view">
           <div className="page-heading"><div><p className="eyebrow">ADMINISTRACIÓN · {countryProfile.shortLabel}</p><h1>Base de datos y configuración</h1><p>Actualiza los universos cuando cambien y carga un único export diario para cruzar las visitas de todos los países.</p></div><div className="country-base-chip">{countryProfile.label}</div></div>
           <div className="base-grid">
-            <label className="upload-card"><input type="file" accept=".xlsx,.xls" onChange={loadWorkbook}/><span className="upload-icon">↥</span><strong>Cargar nueva base</strong><p>{countryProfile.uploadHint}</p><b>Seleccionar archivo</b></label>
+            <label className="upload-card"><input type="file" accept=".xlsx,.xls" onChange={loadWorkbook}/><span className="upload-icon">↥</span><strong>Cargar universo consolidado</strong><p>Un solo Excel con la hoja UNIVERSO y las columnas País y Estudio. Publica todas las operaciones de una vez.</p><b>Seleccionar archivo</b></label>
             <article className="panel base-status"><p className="eyebrow">BASE ACTIVA</p><h2>{sourceName}</h2><div className="base-stat"><strong>{rows.length.toLocaleString("es-DO")}</strong><span>PDV en Universo</span></div><div className="base-status-list"><p><span>✓</span> Hoja UNIVERSO detectada</p><p><span>✓</span> Perfil {countryProfile.shortLabel} activo</p><p><span>✓</span> Cruce por Código DN único preparado</p>{country === "cr" && <p><span>{hasAuditorLimits ? "✓" : "i"}</span>{hasAuditorLimits ? "Día por responsable desde Cargue" : "Día escrito en el planificador"}</p>}</div></article>
           </div>
           <article className="panel visit-import forecast-import">

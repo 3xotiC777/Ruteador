@@ -18,6 +18,18 @@ type AuthEnvironment = {
   FIELD_GT_ABVO_PASSWORD?: string;
   FIELD_CR_USERNAME?: string;
   FIELD_CR_PASSWORD?: string;
+  FIELD_CL_USERNAME?: string;
+  FIELD_CL_PASSWORD?: string;
+  FIELD_EC_USERNAME?: string;
+  FIELD_EC_PASSWORD?: string;
+  FIELD_PA_USERNAME?: string;
+  FIELD_PA_PASSWORD?: string;
+  FIELD_SV_USERNAME?: string;
+  FIELD_SV_PASSWORD?: string;
+  FIELD_NI_USERNAME?: string;
+  FIELD_NI_PASSWORD?: string;
+  FIELD_HN_USERNAME?: string;
+  FIELD_HN_PASSWORD?: string;
   SESSION_SECRET?: string;
 };
 
@@ -80,6 +92,12 @@ export function authenticate(username: string, password: string): Omit<SessionUs
     { country: "gt-embocen", username: config.FIELD_GT_EMBOCEN_USERNAME, password: config.FIELD_GT_EMBOCEN_PASSWORD },
     { country: "gt-abvo", username: config.FIELD_GT_ABVO_USERNAME, password: config.FIELD_GT_ABVO_PASSWORD },
     { country: "cr", username: config.FIELD_CR_USERNAME, password: config.FIELD_CR_PASSWORD },
+    { country: "cl", username: config.FIELD_CL_USERNAME, password: config.FIELD_CL_PASSWORD },
+    { country: "ec", username: config.FIELD_EC_USERNAME, password: config.FIELD_EC_PASSWORD },
+    { country: "pa", username: config.FIELD_PA_USERNAME, password: config.FIELD_PA_PASSWORD },
+    { country: "sv", username: config.FIELD_SV_USERNAME, password: config.FIELD_SV_PASSWORD },
+    { country: "ni", username: config.FIELD_NI_USERNAME, password: config.FIELD_NI_PASSWORD },
+    { country: "hn", username: config.FIELD_HN_USERNAME, password: config.FIELD_HN_PASSWORD },
   ];
   const matchingUser = fieldUsers.find((candidate) =>
     candidate.username &&
