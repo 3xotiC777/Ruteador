@@ -1,6 +1,6 @@
 import { getJsonObject, putJsonObject } from "./object-storage";
 
-export const COUNTRY_IDS = ["rd", "gt-embocen", "gt-abvo", "cr"] as const;
+export const COUNTRY_IDS = ["rd", "gt-embocen", "gt-abvo", "cr", "cl", "ec", "pa", "sv", "ni", "hn"] as const;
 export type CountryId = typeof COUNTRY_IDS[number];
 export type SharedRow = Record<string, string | number | null | undefined>;
 export type SharedBase = {

@@ -5,11 +5,12 @@ import { ROUTER_STORAGE_PREFIX, RouterPlan, RouterPoint } from "../router-plan";
 import styles from "./ruteador.module.css";
 
 type Coordinates = { lat: number; lng: number };
+type WeatherSummary = { temperature: number; minimum: number; maximum: number; rainChance: number; code: number };
 const MAPS_SEGMENT_SIZE = 5;
 const MAPS_SEGMENT_ADVANCE = MAPS_SEGMENT_SIZE - 1;
 
-const isTitular = (point: RouterPoint) => point.selection.toUpperCase() === "T";
-const isSupplement = (point: RouterPoint) => /^S\d*$/.test(point.selection.toUpperCase());
+const isTitular = (point: RouterPoint) => /^T(?:\s|$)/.test(point.selection.toUpperCase());
+const isSupplement = (point: RouterPoint) => /^S(?:\d|\s|$)/.test(point.selection.toUpperCase());
 const hasCoordinates = (point: RouterPoint): point is RouterPoint & Coordinates => point.lat !== null && point.lng !== null;
 const coordinatesOf = (point: RouterPoint): Coordinates | null => hasCoordinates(point) ? { lat: point.lat, lng: point.lng } : null;
 const navigationPlace = (point: RouterPoint) => {
@@ -18,6 +19,15 @@ const navigationPlace = (point: RouterPoint) => {
   return point.address.trim() || [point.name, point.id].filter(Boolean).join(" ");
 };
 const escapeHtml = (entry: unknown) => String(entry ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character] ?? character);
+const weatherLabel = (code: number) => {
+  if (code === 0) return { icon: "☀", text: "Despejado" };
+  if (code <= 3) return { icon: "⛅", text: "Parcialmente nublado" };
+  if ([45, 48].includes(code)) return { icon: "☁", text: "Neblina" };
+  if (code >= 95) return { icon: "⛈", text: "Tormentas" };
+  if (code >= 71 && code <= 86) return { icon: "❄", text: "Nieve" };
+  if (code >= 51 && code <= 67 || code >= 80 && code <= 82) return { icon: "🌧", text: "Lluvia" };
+  return { icon: "☁", text: "Condiciones variables" };
+};
 
 const distanceKm = (a: Coordinates, b: Coordinates) => {
   const radians = (degrees: number) => degrees * Math.PI / 180;
@@ -200,6 +210,8 @@ export default function AuditorRouterPage() {
   const [supplementSearch, setSupplementSearch] = useState("");
   const [locationStatus, setLocationStatus] = useState("");
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const [weather, setWeather] = useState<WeatherSummary | null>(null);
+  const [weatherStatus, setWeatherStatus] = useState("Consultando clima…");
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -229,6 +241,55 @@ export default function AuditorRouterPage() {
     const current = coordinatesOf(point);
     return previous && current ? total + distanceKm(previous, current) : total;
   }, 0), [ordered]);
+  const estimatedRoadDistance = totalDistance * 1.3;
+  const estimatedTravelMinutes = estimatedRoadDistance / 25 * 60;
+  const averageLegMinutes = ordered.length > 1 ? estimatedTravelMinutes / (ordered.length - 1) : 0;
+  const weatherPoint = useMemo(() => {
+    const preferred = startPoint ? coordinatesOf(startPoint) : null;
+    if (preferred) return preferred;
+    const located = titulars.map(coordinatesOf).filter((point): point is Coordinates => Boolean(point));
+    if (!located.length) return null;
+    return { lat: located.reduce((total, point) => total + point.lat, 0) / located.length, lng: located.reduce((total, point) => total + point.lng, 0) / located.length };
+  }, [startPoint, titulars]);
+
+  useEffect(() => {
+    if (!weatherPoint) {
+      setWeather(null);
+      setWeatherStatus("Sin coordenadas para consultar el clima.");
+      return;
+    }
+    const controller = new AbortController();
+    setWeatherStatus("Consultando clima…");
+    const params = new URLSearchParams({
+      latitude: String(weatherPoint.lat), longitude: String(weatherPoint.lng),
+      current: "temperature_2m,weather_code",
+      daily: "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code",
+      timezone: "auto", forecast_days: "1",
+    });
+    void fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("weather");
+        return response.json();
+      })
+      .then((body) => {
+        const nextWeather: WeatherSummary = {
+          temperature: Number(body.current?.temperature_2m),
+          code: Number(body.current?.weather_code ?? body.daily?.weather_code?.[0]),
+          maximum: Number(body.daily?.temperature_2m_max?.[0]),
+          minimum: Number(body.daily?.temperature_2m_min?.[0]),
+          rainChance: Number(body.daily?.precipitation_probability_max?.[0]),
+        };
+        if (!Number.isFinite(nextWeather.temperature)) throw new Error("weather");
+        setWeather(nextWeather);
+        setWeatherStatus("");
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setWeather(null);
+        setWeatherStatus("Clima temporalmente no disponible.");
+      });
+    return () => controller.abort();
+  }, [weatherPoint]);
   const filteredTitulars = useMemo(() => {
     const term = search.trim().toLowerCase();
     return titulars.filter((point) => `${point.name} ${point.id} ${point.route} ${point.channel}`.toLowerCase().includes(term));
@@ -302,6 +363,11 @@ export default function AuditorRouterPage() {
       </div>
 
       <aside className={styles.plannerPanel}>
+        <div className={styles.weatherCard}>
+          <span className={styles.weatherIcon}>{weather ? weatherLabel(weather.code).icon : "◷"}</span>
+          <div><small>CLIMA EN LA ZONA DE LA RUTA</small><b>{weather ? `${Math.round(weather.temperature)} °C · ${weatherLabel(weather.code).text}` : weatherStatus}</b>{weather && <em>Máx. {Math.round(weather.maximum)}° · mín. {Math.round(weather.minimum)}° · lluvia {Math.round(weather.rainChance)}%</em>}</div>
+          <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo ↗</a>
+        </div>
         {!startPoint ? <>
           <div className={styles.panelIntro}><h2>¿Con cuál punto deseas iniciar?</h2><p>Elige un titular con coordenadas. A partir de ese punto ordenaremos los demás por cercanía.</p></div>
           <button className={styles.gpsButton} onClick={useCurrentLocation}>⌖ Sugerir el más cercano a mí</button>
@@ -318,7 +384,7 @@ export default function AuditorRouterPage() {
             <button onClick={() => setStartKey("")}>Cambiar inicio</button>
           </div>
           {locationStatus && <p className={styles.locationStatus}>{locationStatus}</p>}
-          <div className={styles.routeStats}><div><b>{titulars.length}</b><small>Titulares</small></div><div><b>{supplementalKeys.length}</b><small>Suplentes agregados</small></div><div><b>{totalDistance.toFixed(1)} km</b><small>Distancia aproximada</small></div></div>
+          <div className={styles.routeStats}><div><b>{titulars.length}</b><small>Titulares</small></div><div><b>{supplementalKeys.length}</b><small>Suplentes agregados</small></div><div><b>{estimatedRoadDistance.toFixed(1)} km</b><small>Distancia vial estimada</small></div><div><b>{averageLegMinutes ? `${Math.round(averageLegMinutes)} min` : "—"}</b><small>Promedio entre puntos</small></div></div>
           <div className={styles.segmentSection}>
             <div className={styles.segmentTitle}><div><b>Navegación por tramos</b><small>Máximo 5 puntos por tramo para que Google Maps no descarte ninguno.</small></div><span>{chunks.length} tramo(s)</span></div>
             <div className={styles.segmentList}>{chunks.map((chunk, index) => {
@@ -334,7 +400,7 @@ export default function AuditorRouterPage() {
           <div className={styles.routeActions}>
             <button onClick={() => setShowSupplements(true)}>+ Agregar suplente <b>{supplementalKeys.length || ""}</b></button>
           </div>
-          <p className={styles.routeNote}>Abre los tramos en orden. El último punto de cada tramo se repite como inicio del siguiente; Google Maps aplicará las calles y el tráfico.</p>
+          <p className={styles.routeNote}>Distancia y tiempo son estimaciones sin tráfico (factor vial 1,3 y 25 km/h). Abre los tramos en orden; Google Maps aplicará las calles y el tráfico real.</p>
           <div className={styles.itinerary}>{ordered.map((point, index) => <article key={point.key}>
             <span className={isTitular(point) ? styles.itineraryT : styles.itineraryS}>{index + 1}</span>
             <div><b>{point.name}</b><small>{point.id} · {isTitular(point) ? "Titular" : `Suplente ${point.selection}`} · {point.fixed ? "Fijo" : "No fijo"}</small></div>

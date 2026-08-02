@@ -8,6 +8,12 @@ const allowedPathnames = new Set([
   "active-bases/gt-embocen.json",
   "active-bases/gt-abvo.json",
   "active-bases/cr.json",
+  "active-bases/cl.json",
+  "active-bases/ec.json",
+  "active-bases/pa.json",
+  "active-bases/sv.json",
+  "active-bases/ni.json",
+  "active-bases/hn.json",
   "active-visits/informes.json",
   "active-forecast/current.json",
 ]);
