@@ -25,6 +25,7 @@ type VisitSnapshot = {
 };
 type ForecastEntry = { date: string; country: CountryId; study: string; forecast: number | null; day: number };
 type ForecastSnapshot = { entries: ForecastEntry[]; sourceName: string; uploadedAt: number };
+type SpecialAssignmentsResponse = { assignments: Record<string, string>; updatedAt: number; error?: string };
 type ForecastStatus = {
   kind: "active" | "upcoming" | "closed" | "missing";
   entry: ForecastEntry | null;
@@ -502,6 +503,7 @@ export default function Home() {
   const [auditorLimits, setAuditorLimits] = useState<AuditorLimits>({});
   const [extraAssignments, setExtraAssignments] = useState<Record<string, string>>({});
   const [specialDraftAssignments, setSpecialDraftAssignments] = useState<Record<string, string>>({});
+  const [specialSaving, setSpecialSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [exports, setExports] = useState<ExportFile[]>([]);
   const [notice, setNotice] = useState("");
@@ -514,6 +516,7 @@ export default function Home() {
   const [forecastSnapshot, setForecastSnapshot] = useState<ForecastSnapshot | null>(null);
   const baseVersions = useRef<Partial<Record<CountryId, number>>>({});
   const visitVersion = useRef(0);
+  const specialRequestVersion = useRef(0);
   const countryProfile = COUNTRY_PROFILES[country];
   const dashboardCountryProfile = COUNTRY_PROFILES[dashboardCountry];
   const hasAuditorLimits = Object.keys(auditorLimits).length > 0;
@@ -617,8 +620,6 @@ export default function Home() {
 
   const clearRouteWork = useCallback(() => {
     setExports([]);
-    setExtraAssignments({});
-    setSpecialDraftAssignments({});
     setRouteRows([]);
     setMapAuditor("");
     setDetailAuditor("");
@@ -720,6 +721,40 @@ export default function Home() {
     }
   }, []);
 
+  const activateSpecialAssignments = useCallback(async (announce = false) => {
+    const requestVersion = ++specialRequestVersion.current;
+    try {
+      const params = new URLSearchParams({ country, study, day: String(day) });
+      const response = await fetch(`/api/special-requests?${params}`, { cache: "no-store", credentials: "same-origin" });
+      if (response.status === 401) {
+        setRole(null);
+        setUsername("");
+        setAllowedCountry(null);
+        return;
+      }
+      const body = await response.json() as SpecialAssignmentsResponse;
+      if (!response.ok) throw new Error(body.error || "No fue posible consultar las solicitudes especiales.");
+      if (requestVersion !== specialRequestVersion.current) return;
+      setExtraAssignments(body.assignments ?? {});
+      setSpecialDraftAssignments(body.assignments ?? {});
+      if (announce && Object.keys(body.assignments ?? {}).length) {
+        setNotice(`${Object.keys(body.assignments).length} solicitud(es) especial(es) compartida(s) activadas para el día ${day}.`);
+      }
+    } catch (error) {
+      if (requestVersion !== specialRequestVersion.current) return;
+      setExtraAssignments({});
+      setSpecialDraftAssignments({});
+      if (announce) setNotice(error instanceof Error ? error.message : "No fue posible consultar las solicitudes especiales.");
+    }
+  }, [country, day, study]);
+
+  useEffect(() => {
+    if (!role || !rows.length) return;
+    setExtraAssignments({});
+    setSpecialDraftAssignments({});
+    void activateSpecialAssignments();
+  }, [activateSpecialAssignments, role, rows.length]);
+
   useEffect(() => {
     if (role === "Campo" && automaticForecast) setActiveDay(automaticForecast.day);
   }, [automaticForecast, role, setActiveDay]);
@@ -755,6 +790,7 @@ export default function Home() {
       void activateSharedBase(country);
       void activateVisitSnapshot();
       void activateForecastSnapshot();
+      void activateSpecialAssignments();
     };
     const timer = window.setInterval(refresh, 300_000);
     window.addEventListener("focus", refresh);
@@ -762,7 +798,7 @@ export default function Home() {
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [activateForecastSnapshot, activateSharedBase, activateVisitSnapshot, country, role]);
+  }, [activateForecastSnapshot, activateSharedBase, activateSpecialAssignments, activateVisitSnapshot, country, role]);
 
   useEffect(() => {
     if (!role || tab !== "dashboard") return;
@@ -1187,11 +1223,31 @@ export default function Home() {
     });
   };
   const assignExtraAuditor = (id: string, auditor: string) => setSpecialDraftAssignments((current) => ({ ...current, [id]: auditor }));
-  const applySpecialRequests = () => {
-    const applied = { ...specialDraftAssignments };
-    setExtraAssignments(applied);
-    setShowSpecial(false);
-    createRoutes(applied);
+  const applySpecialRequests = async () => {
+    if (role !== "Administrador" || specialSaving) return;
+    setSpecialSaving(true);
+    try {
+      const originalAuditors = Object.fromEntries(studyRows
+        .filter((row) => specialDraftAssignments[idOf(row)])
+        .map((row) => [idOf(row), auditorOf(row)]));
+      const response = await fetch("/api/special-requests", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ country, study, day, assignments: specialDraftAssignments, originalAuditors }),
+      });
+      const body = await response.json() as SpecialAssignmentsResponse;
+      if (!response.ok) throw new Error(body.error || "No fue posible guardar las solicitudes especiales.");
+      const applied = body.assignments ?? {};
+      setExtraAssignments(applied);
+      setSpecialDraftAssignments(applied);
+      setShowSpecial(false);
+      createRoutes(applied);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "No fue posible guardar las solicitudes especiales.");
+    } finally {
+      setSpecialSaving(false);
+    }
   };
   const fieldMode = role === "Administrador";
 
@@ -1285,8 +1341,8 @@ export default function Home() {
         </section>}
         {tab === "rutas" && routeAuditors.length > 0 && <RoutePreview auditors={routeAuditors} rows={routeRows} onDetails={setDetailAuditor}/>}
         {detailAuditor && <RouteDetailPanel auditor={detailAuditor} country={countryProfile.label} rows={routeRows.filter((row) => auditorOf(row) === detailAuditor)} onClose={() => setDetailAuditor("")}/>}
-        {tab === "rutas" && <button className="special-launch" onClick={openSpecialRequests}>+ Solicitudes especiales <span>{extraIds.length}</span></button>}
-        {showSpecial && <div className="special-modal" role="dialog" aria-modal="true" aria-label="Solicitudes especiales"><div className="special-modal-card"><div className="special-modal-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>Agregar y asignar PDV</h2><p>Busca un punto de otro día, revisa su auditor actual y decide quién lo atenderá.</p></div><button onClick={() => setShowSpecial(false)} aria-label="Cerrar">×</button></div><div className="search modal-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar PDV, ruta, canal o auditor"/></div><div className="special-results">{filteredPoints.map((row) => { const id = idOf(row); const checked = Boolean(specialDraftAssignments[id]); const originalAuditor = auditorOf(row) || "Sin auditor"; return <article key={id} className={checked ? "special-result-card checked" : "special-result-card"}><button className="special-result-main" onClick={() => toggleExtra(row)}><span className="check">{checked ? "✓" : ""}</span><div><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · Ruta {routeLabelOf(row) || "—"} · {channelOf(row) || "Sin canal"}</small><em>Auditor actual: <b>{originalAuditor}</b></em></div><span className={fixedOf(row).toUpperCase() === "SI" ? "fixed-badge" : "normal-badge"}>{fixedOf(row).toUpperCase() === "SI" ? "Fijo" : "No fijo"}</span></button>{checked && <label className="special-auditor-assignment"><span><strong>¿Quién atenderá este PDV?</strong><small>Conserva el auditor actual o selecciona otro.</small></span><select aria-label={`Asignar ${nameOf(row)} a auditor`} value={specialDraftAssignments[id]} onChange={(event) => assignExtraAuditor(id, event.target.value)}>{availableAuditors.map((auditor) => <option key={auditor} value={auditor}>{auditor}{auditor === auditorOf(row) ? " · auditor actual" : ""}</option>)}</select></label>}</article>; })}{!filteredPoints.length && <p className="empty">No hay puntos que coincidan con la búsqueda.</p>}</div><div className="special-modal-footer"><span><b>{Object.keys(specialDraftAssignments).length}</b> PDV seleccionados · se recalcularán las rutas y CSV</span><button className="button primary modal-done" onClick={applySpecialRequests}>Aplicar y listo</button></div></div></div>}
+        {tab === "rutas" && role === "Administrador" && <button className="special-launch" onClick={openSpecialRequests}>+ Solicitudes especiales <span>{extraIds.length}</span></button>}
+        {showSpecial && <div className="special-modal" role="dialog" aria-modal="true" aria-label="Solicitudes especiales"><div className="special-modal-card"><div className="special-modal-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>Agregar y asignar PDV</h2><p>Busca un punto de otro día, revisa su auditor actual y decide quién lo atenderá. La asignación quedará compartida con Campo.</p></div><button onClick={() => setShowSpecial(false)} aria-label="Cerrar" disabled={specialSaving}>×</button></div><div className="search modal-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar PDV, ruta, canal o auditor"/></div><div className="special-results">{filteredPoints.map((row) => { const id = idOf(row); const checked = Boolean(specialDraftAssignments[id]); const originalAuditor = auditorOf(row) || "Sin auditor"; return <article key={id} className={checked ? "special-result-card checked" : "special-result-card"}><button className="special-result-main" onClick={() => toggleExtra(row)}><span className="check">{checked ? "✓" : ""}</span><div><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · Ruta {routeLabelOf(row) || "—"} · {channelOf(row) || "Sin canal"}</small><em>Auditor actual: <b>{originalAuditor}</b></em></div><span className={fixedOf(row).toUpperCase() === "SI" ? "fixed-badge" : "normal-badge"}>{fixedOf(row).toUpperCase() === "SI" ? "Fijo" : "No fijo"}</span></button>{checked && <label className="special-auditor-assignment"><span><strong>¿Quién atenderá este PDV?</strong><small>Conserva el auditor actual o selecciona otro.</small></span><select aria-label={`Asignar ${nameOf(row)} a auditor`} value={specialDraftAssignments[id]} onChange={(event) => assignExtraAuditor(id, event.target.value)} disabled={specialSaving}>{availableAuditors.map((auditor) => <option key={auditor} value={auditor}>{auditor}{auditor === auditorOf(row) ? " · auditor actual" : ""}</option>)}</select></label>}</article>; })}{!filteredPoints.length && <p className="empty">No hay puntos que coincidan con la búsqueda.</p>}</div><div className="special-modal-footer"><span><b>{Object.keys(specialDraftAssignments).length}</b> PDV seleccionados · se guardarán para todos los dispositivos</span><button className="button primary modal-done" onClick={applySpecialRequests} disabled={specialSaving}>{specialSaving ? "Guardando…" : "Aplicar y listo"}</button></div></div></div>}
       </div>
     </section>
   </main>;
