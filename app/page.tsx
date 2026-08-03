@@ -503,6 +503,7 @@ export default function Home() {
   const [auditorLimits, setAuditorLimits] = useState<AuditorLimits>({});
   const [extraAssignments, setExtraAssignments] = useState<Record<string, string>>({});
   const [specialDraftAssignments, setSpecialDraftAssignments] = useState<Record<string, string>>({});
+  const [specialLoading, setSpecialLoading] = useState(true);
   const [specialSaving, setSpecialSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [exports, setExports] = useState<ExportFile[]>([]);
@@ -723,6 +724,7 @@ export default function Home() {
 
   const activateSpecialAssignments = useCallback(async (announce = false) => {
     const requestVersion = ++specialRequestVersion.current;
+    setSpecialLoading(true);
     try {
       const params = new URLSearchParams({ country, study, day: String(day) });
       const response = await fetch(`/api/special-requests?${params}`, { cache: "no-store", credentials: "same-origin" });
@@ -745,6 +747,8 @@ export default function Home() {
       setExtraAssignments({});
       setSpecialDraftAssignments({});
       if (announce) setNotice(error instanceof Error ? error.message : "No fue posible consultar las solicitudes especiales.");
+    } finally {
+      if (requestVersion === specialRequestVersion.current) setSpecialLoading(false);
     }
   }, [country, day, study]);
 
@@ -1303,7 +1307,7 @@ export default function Home() {
             <div className="control"><label>Estudio</label><select aria-label="Estudio" value={study} onChange={(event) => { setStudy(event.target.value); clearRouteWork(); }}>{studyOptions.map((item) => <option value={item} key={item}>{item}</option>)}</select><small>{studyOptions.length > 1 ? "Selecciona el estudio a rutear" : "Estudio activo en esta base"}</small></div>
             <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={dayInput} disabled={role === "Campo"} onChange={(event) => setDayInput(event.target.value.replace(/\D/g, "").slice(0, 2))} onBlur={commitDayInput} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} aria-label="Escribir día de campo"/><small>{role === "Campo" ? automaticForecast ? `Automático · Forecast ${automaticForecast.date}` : "Sin forecast vigente; Administrador debe cargarlo" : "Escribe el número y presiona Enter"}</small></div>
             <div className="control source"><label>Base activa</label><strong>▣ {sourceName}</strong><small>{rows.length.toLocaleString("es-DO")} PDV · {exportMatches.toLocaleString("es-DO")} visitados en export</small></div>
-            <button className="button primary generate" onClick={() => createRoutes()} disabled={!rows.length || (role === "Campo" && !automaticForecast)}>Cargar rutas <span>→</span></button>
+            <button className="button primary generate" onClick={() => createRoutes()} disabled={!rows.length || specialLoading || (role === "Campo" && !automaticForecast)}>{specialLoading ? "Sincronizando…" : "Cargar rutas"} <span>→</span></button>
             <label className="carryover-toggle"><input type="checkbox" checked={studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]) ? true : includeCarryover} disabled={Boolean(studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]))} onChange={(event) => setIncludeCarryover(event.target.checked)}/><span><b>Incluir pendientes de días anteriores</b><small>{studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]) ? "Activo para el universo regional: solo arrastra puntos aún no visitados." : "Actívalo cuando quieras el arrastre acumulado de la macro."}</small></span></label>
           </div>
           <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(row)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {includeCarryover ? "día elegido + pendientes anteriores" : "solo el día elegido"}</small></div><button className="button secondary" onClick={() => downloadCsvZip(exports, `Rutas_${countryProfile.shortLabel}_dia_${day}.zip`)}>Descargar ZIP</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, escribe el día y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
