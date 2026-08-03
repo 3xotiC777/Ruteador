@@ -500,7 +500,8 @@ export default function Home() {
   const [dashboardBaseRows, setDashboardBaseRows] = useState<Row[]>([]);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [auditorLimits, setAuditorLimits] = useState<AuditorLimits>({});
-  const [extraIds, setExtraIds] = useState<string[]>([]);
+  const [extraAssignments, setExtraAssignments] = useState<Record<string, string>>({});
+  const [specialDraftAssignments, setSpecialDraftAssignments] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [exports, setExports] = useState<ExportFile[]>([]);
   const [notice, setNotice] = useState("");
@@ -554,7 +555,8 @@ export default function Home() {
   }, [hasExportVisit]);
   const studyRows = useMemo(() => rows.filter((row) => normalize(studyOf(row)) === normalize(study)), [rows, study]);
   const scheduled = useMemo(() => studyRows.filter((row) => dayOf(row) === day), [day, studyRows]);
-  const extras = useMemo(() => studyRows.filter((row) => extraIds.includes(idOf(row))), [extraIds, studyRows]);
+  const extraIds = useMemo(() => Object.keys(extraAssignments), [extraAssignments]);
+  const availableAuditors = useMemo(() => Array.from(new Set(studyRows.map(auditorOf).filter(Boolean))).sort((left, right) => left.localeCompare(right)), [studyRows]);
   const filteredPoints = useMemo(() => studyRows.filter((row) => {
     const haystack = `${idOf(row)} ${nameOf(row)} ${auditorOf(row)} ${channelOf(row)} ${routeLabelOf(row)}`.toLowerCase();
     return haystack.includes(search.toLowerCase()) && dayOf(row) !== day && !isVisited(row);
@@ -615,7 +617,8 @@ export default function Home() {
 
   const clearRouteWork = useCallback(() => {
     setExports([]);
-    setExtraIds([]);
+    setExtraAssignments({});
+    setSpecialDraftAssignments({});
     setRouteRows([]);
     setMapAuditor("");
     setDetailAuditor("");
@@ -1101,7 +1104,7 @@ export default function Home() {
     }
   };
 
-  const createRoutes = () => {
+  const createRoutes = (assignmentOverride?: Record<string, string>) => {
     if (!rows.length) {
       setNotice(`Carga primero el Excel de ${countryProfile.label} desde Base de datos.`);
       return;
@@ -1121,7 +1124,12 @@ export default function Home() {
         : scheduledDay === rowTargetDay;
       return shouldLoad(row) && !isVisited(row) && matchesDay && Boolean(selectionGroupOf(row));
     });
-    const all = [...base, ...extras.filter((row) => !isVisited(row) && !base.some((baseRow) => idOf(baseRow) === idOf(row)))];
+    const assignments = assignmentOverride ?? extraAssignments;
+    const assignmentIds = new Set(Object.keys(assignments));
+    const assignedExtras = studyRows
+      .filter((row) => assignmentIds.has(idOf(row)) && !isVisited(row))
+      .map((row) => ({ ...row, Auditor: assignments[idOf(row)] || auditorOf(row) }));
+    const all = [...base.filter((row) => !assignmentIds.has(idOf(row))), ...assignedExtras];
     const files: ExportFile[] = [];
     for (const auditor of Array.from(new Set(all.map(auditorOf).filter(Boolean)))) {
       const perAuditor = all.filter((row) => auditorOf(row) === auditor);
@@ -1160,10 +1168,31 @@ export default function Home() {
     setExports(files); setRouteRows(all); setMapAuditor(auditorOf(all[0] ?? {})); setTab("rutas");
     const selectedDayDescription = !genericRegional && countryProfile.engine === "cr" && hasAuditorLimits ? "los días definidos en Cargue" : `el día ${day}`;
     const scopeDescription = carryoverEnabled ? `${selectedDayDescription}, incluyendo pendientes anteriores` : `solo ${selectedDayDescription}`;
-    setNotice(files.length ? `${files.length} archivos CSV de ${countryProfile.label} listos con ${scopeDescription}. ${extras.length ? `${extras.length} excepción(es) incluida(s).` : ""}` : `No se encontraron PDV pendientes para ${scopeDescription}. Revisa los campos indicados en las reglas de ${countryProfile.label}.`);
+    setNotice(files.length ? `${files.length} archivos CSV de ${countryProfile.label} listos con ${scopeDescription}. ${assignedExtras.length ? `${assignedExtras.length} solicitud(es) especial(es) asignada(s).` : ""}` : `No se encontraron PDV pendientes para ${scopeDescription}. Revisa los campos indicados en las reglas de ${countryProfile.label}.`);
   };
 
-  const toggleExtra = (id: string) => setExtraIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const openSpecialRequests = () => {
+    setSpecialDraftAssignments({ ...extraAssignments });
+    setShowSpecial(true);
+  };
+  const toggleExtra = (row: Row) => {
+    const id = idOf(row);
+    setSpecialDraftAssignments((current) => {
+      if (current[id]) {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      }
+      return { ...current, [id]: auditorOf(row) || availableAuditors[0] || "Sin auditor" };
+    });
+  };
+  const assignExtraAuditor = (id: string, auditor: string) => setSpecialDraftAssignments((current) => ({ ...current, [id]: auditor }));
+  const applySpecialRequests = () => {
+    const applied = { ...specialDraftAssignments };
+    setExtraAssignments(applied);
+    setShowSpecial(false);
+    createRoutes(applied);
+  };
   const fieldMode = role === "Administrador";
 
   if (authLoading) return <LoginLoading/>;
@@ -1218,10 +1247,10 @@ export default function Home() {
             <div className="control"><label>Estudio</label><select aria-label="Estudio" value={study} onChange={(event) => { setStudy(event.target.value); clearRouteWork(); }}>{studyOptions.map((item) => <option value={item} key={item}>{item}</option>)}</select><small>{studyOptions.length > 1 ? "Selecciona el estudio a rutear" : "Estudio activo en esta base"}</small></div>
             <div className="control small"><label>{countryProfile.cutoffLabel}</label><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={dayInput} disabled={role === "Campo"} onChange={(event) => setDayInput(event.target.value.replace(/\D/g, "").slice(0, 2))} onBlur={commitDayInput} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} aria-label="Escribir día de campo"/><small>{role === "Campo" ? automaticForecast ? `Automático · Forecast ${automaticForecast.date}` : "Sin forecast vigente; Administrador debe cargarlo" : "Escribe el número y presiona Enter"}</small></div>
             <div className="control source"><label>Base activa</label><strong>▣ {sourceName}</strong><small>{rows.length.toLocaleString("es-DO")} PDV · {exportMatches.toLocaleString("es-DO")} visitados en export</small></div>
-            <button className="button primary generate" onClick={createRoutes} disabled={!rows.length || (role === "Campo" && !automaticForecast)}>Cargar rutas <span>→</span></button>
+            <button className="button primary generate" onClick={() => createRoutes()} disabled={!rows.length || (role === "Campo" && !automaticForecast)}>Cargar rutas <span>→</span></button>
             <label className="carryover-toggle"><input type="checkbox" checked={studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]) ? true : includeCarryover} disabled={Boolean(studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]))} onChange={(event) => setIncludeCarryover(event.target.checked)}/><span><b>Incluir pendientes de días anteriores</b><small>{studyRows[0] && hasField(studyRows[0], ["Pais", "Estudio"]) ? "Activo para el universo regional: solo arrastra puntos aún no visitados." : "Actívalo cuando quieras el arrastre acumulado de la macro."}</small></span></label>
           </div>
-          <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {includeCarryover ? "día elegido + pendientes anteriores" : "solo el día elegido"}</small></div><button className="button secondary" onClick={() => downloadCsvZip(exports, `Rutas_${countryProfile.shortLabel}_dia_${day}.zip`)}>Descargar ZIP</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, escribe el día y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
+          <div className="route-body"><article className="panel exceptions"><div className="panel-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>PDV fuera del día</h2><p>Selecciona puntos que el cliente pidió atender antes de su fecha programada.</p></div><span className="counter">{extraIds.length} elegidos</span></div><div className="search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por PDV, auditor o canal"/></div><div className="point-list">{filteredPoints.slice(0, 7).map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "point checked" : "point"} onClick={() => toggleExtra(row)}><span className="check">{checked ? "✓" : ""}</span><span><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · {auditorOf(row)}</small></span><em>{selectedOf(row) || "—"}</em></button>; })}{!filteredPoints.length && <p className="empty">No hay otros PDV que coincidan con la búsqueda.</p>}</div></article><article className="panel export-panel"><div className="panel-head"><div><p className="eyebrow">ENTREGABLES</p><h2>CSV para Google My Maps</h2><p>Los nombres y segmentos siguen la macro de {countryProfile.label}.</p></div></div>{exports.length ? <><div className="export-summary"><span>✓</span><div><strong>{exports.length} archivos generados</strong><small>{countryProfile.label} · {includeCarryover ? "día elegido + pendientes anteriores" : "solo el día elegido"}</small></div><button className="button secondary" onClick={() => downloadCsvZip(exports, `Rutas_${countryProfile.shortLabel}_dia_${day}.zip`)}>Descargar ZIP</button></div><div className="file-list">{exports.map((file) => <button key={file.name} className="file" onClick={() => downloadCsv(file)}><span>CSV</span><div><strong>{file.name}</strong><small>{file.rows.length} puntos</small></div><b>↓</b></button>)}</div></> : <div className="empty-export"><span>↥</span><strong>Tus archivos aparecerán aquí</strong><p>Selecciona la operación, escribe el día y presiona <b>“Cargar rutas”</b>.</p></div>}<div className="map-link"><div><span>⌖</span><p><strong>Enlace compartido del mapa</strong><small>Se conserva para el equipo y se actualiza al importar los nuevos CSV.</small></p></div><input value={mapLink} onChange={(event) => setMapLink(event.target.value)} placeholder="Pega aquí el enlace de Google My Maps"/><a href={mapLink || "https://www.google.com/maps/d/u/0/"} target="_blank" rel="noreferrer">Abrir mapa ↗</a></div></article></div>
         </section>}
         {tab === "rutas" && routeAuditors.length > 0 && <section className="panel route-map-panel"><div className="panel-head"><div><p className="eyebrow">VISTA PREVIA DE RUTAS</p><h2>Puntos a visitar por auditor</h2><p>Los botones abren Google Maps con la ruta de conducción. Google admite hasta 25 puntos por apertura.</p></div></div><div className="auditor-route-list">{routeAuditors.map((auditor) => { const points = routeRows.filter((row) => auditorOf(row) === auditor); return <div className={mapAuditor === auditor ? "auditor-route active" : "auditor-route"} key={auditor}><button onClick={() => setMapAuditor(auditor)}><i>{auditor.slice(0, 1)}</i><span><strong>{auditor}</strong><small>{points.length} PDV pendientes</small></span><b>Ver puntos</b></button><a href={mapsRouteUrl(points)} target="_blank" rel="noreferrer">Abrir en Google Maps ↗</a></div>; })}</div><div className="map-canvas" aria-label={`Mapa de puntos de ${mapAuditor}`}><div className="map-title"><span>⌖</span><div><strong>{mapAuditor || "Selecciona un auditor"}</strong><small>{mapPoints.length} puntos con coordenadas</small></div></div><div className="map-road road-one"></div><div className="map-road road-two"></div><div className="map-road road-three"></div>{mapBounds && mapPoints.map((row, index) => { const point = coordinatesOf(row)!; const xRange = Math.max(mapBounds.maxLng - mapBounds.minLng, .01); const yRange = Math.max(mapBounds.maxLat - mapBounds.minLat, .01); const left = 8 + ((point.lng - mapBounds.minLng) / xRange) * 84; const top = 87 - ((point.lat - mapBounds.minLat) / yRange) * 75; return <span className="preview-pin" style={{ left: `${left}%`, top: `${top}%` }} title={nameOf(row)} key={`${idOf(row)}-${index}`}>{index + 1}</span>; })}<div className="map-scale">Puntos con LATITUD / LONGITUD</div></div></section>}
         {tab === "dashboard" && <section className="dashboard-view">
@@ -1256,8 +1285,8 @@ export default function Home() {
         </section>}
         {tab === "rutas" && routeAuditors.length > 0 && <RoutePreview auditors={routeAuditors} rows={routeRows} onDetails={setDetailAuditor}/>}
         {detailAuditor && <RouteDetailPanel auditor={detailAuditor} country={countryProfile.label} rows={routeRows.filter((row) => auditorOf(row) === detailAuditor)} onClose={() => setDetailAuditor("")}/>}
-        {tab === "rutas" && <button className="special-launch" onClick={() => setShowSpecial(true)}>+ Solicitudes especiales <span>{extraIds.length}</span></button>}
-        {showSpecial && <div className="special-modal" role="dialog" aria-modal="true" aria-label="Solicitudes especiales"><div className="special-modal-card"><div className="special-modal-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>Agregar PDV a la ruta</h2><p>Busca por nombre, código, auditor, canal o <b>ruta</b>.</p></div><button onClick={() => setShowSpecial(false)} aria-label="Cerrar">×</button></div><div className="search modal-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar PDV, ruta, canal o auditor"/></div><div className="special-results">{filteredPoints.map((row) => { const id = idOf(row); const checked = extraIds.includes(id); return <button key={id} className={checked ? "special-result checked" : "special-result"} onClick={() => toggleExtra(id)}><span className="check">{checked ? "✓" : ""}</span><div><strong>{nameOf(row)}</strong><small>{id} · Ruta {routeLabelOf(row) || "—"} · {channelOf(row) || "Sin canal"}</small></div><span className={fixedOf(row).toUpperCase() === "SI" ? "fixed-badge" : "normal-badge"}>{fixedOf(row).toUpperCase() === "SI" ? "Fijo" : "No fijo"}</span></button>})}{!filteredPoints.length && <p className="empty">No hay puntos que coincidan con la búsqueda.</p>}</div><div className="special-modal-footer"><span>{extraIds.length} PDV seleccionados</span><button className="button primary modal-done" onClick={() => setShowSpecial(false)}>Listo</button></div></div></div>}
+        {tab === "rutas" && <button className="special-launch" onClick={openSpecialRequests}>+ Solicitudes especiales <span>{extraIds.length}</span></button>}
+        {showSpecial && <div className="special-modal" role="dialog" aria-modal="true" aria-label="Solicitudes especiales"><div className="special-modal-card"><div className="special-modal-head"><div><p className="eyebrow">SOLICITUDES ESPECIALES</p><h2>Agregar y asignar PDV</h2><p>Busca un punto de otro día, revisa su auditor actual y decide quién lo atenderá.</p></div><button onClick={() => setShowSpecial(false)} aria-label="Cerrar">×</button></div><div className="search modal-search"><span>⌕</span><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar PDV, ruta, canal o auditor"/></div><div className="special-results">{filteredPoints.map((row) => { const id = idOf(row); const checked = Boolean(specialDraftAssignments[id]); const originalAuditor = auditorOf(row) || "Sin auditor"; return <article key={id} className={checked ? "special-result-card checked" : "special-result-card"}><button className="special-result-main" onClick={() => toggleExtra(row)}><span className="check">{checked ? "✓" : ""}</span><div><strong>{nameOf(row)}</strong><small>{id} · Día {dayOf(row)} · Ruta {routeLabelOf(row) || "—"} · {channelOf(row) || "Sin canal"}</small><em>Auditor actual: <b>{originalAuditor}</b></em></div><span className={fixedOf(row).toUpperCase() === "SI" ? "fixed-badge" : "normal-badge"}>{fixedOf(row).toUpperCase() === "SI" ? "Fijo" : "No fijo"}</span></button>{checked && <label className="special-auditor-assignment"><span><strong>¿Quién atenderá este PDV?</strong><small>Conserva el auditor actual o selecciona otro.</small></span><select aria-label={`Asignar ${nameOf(row)} a auditor`} value={specialDraftAssignments[id]} onChange={(event) => assignExtraAuditor(id, event.target.value)}>{availableAuditors.map((auditor) => <option key={auditor} value={auditor}>{auditor}{auditor === auditorOf(row) ? " · auditor actual" : ""}</option>)}</select></label>}</article>; })}{!filteredPoints.length && <p className="empty">No hay puntos que coincidan con la búsqueda.</p>}</div><div className="special-modal-footer"><span><b>{Object.keys(specialDraftAssignments).length}</b> PDV seleccionados · se recalcularán las rutas y CSV</span><button className="button primary modal-done" onClick={applySpecialRequests}>Aplicar y listo</button></div></div></div>}
       </div>
     </section>
   </main>;
